@@ -1,0 +1,15 @@
+## Visual Studio 缓存
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## 构建输出
+[Bb]in/
+[Oo]bj/
+*.pdb
+*.exe
+
+## 运行时日志
+log.txt
