@@ -152,7 +152,7 @@
         private System.Windows.Forms.Button Start;
         private System.Windows.Forms.Button BtnBrowse;
         private System.Windows.Forms.CheckBox CbSubfolders;
-        private System.Windows.Forms.TreeView DetailTree;
+        private VideoTime.BufferedTreeView DetailTree;
         private System.Windows.Forms.ContextMenuStrip DetailContextMenu;
         private System.Windows.Forms.FolderBrowserDialog folderBrowserDialog1;
     }
