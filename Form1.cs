@@ -14,10 +14,19 @@ using System.Windows.Forms;
 
 namespace VideoTime
 {
+    public enum LogLevel
+    {
+        Error = 0,
+        Warning = 1,
+        Info = 2
+    }
+
     public partial class Form1 : Form
     {
         private const int MaxDepth = 50;
         private int _failCount = 0;
+        private int _dirFail = 0;
+        private int _depthSkipped = 0;
         private List<FolderResult> _folderResults = new List<FolderResult>();
 
         private TreeNode _selNode;
@@ -90,17 +99,20 @@ namespace VideoTime
 
         private async void Start_Click(object sender, EventArgs e)
         {
-            string folderPath = TextBox_Doc.Text.Trim().Trim('"');
+string folderPath = TextBox_Doc.Text.Trim().Trim('"');
 
             if (!Directory.Exists(folderPath))
             {
-                MessageBox.Show("文件夹路径无效，请重新输入。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowTime.Text = "文件夹路径无效，请重新输入。";
+                AppendLog("文件夹路径无效: " + folderPath, LogLevel.Warning);
                 return;
             }
 
             DetailTree.Nodes.Clear();
 
             _failCount = 0;
+            _dirFail = 0;
+            _depthSkipped = 0;
             _folderResults.Clear();
             bool recursive = CbSubfolders.Checked;
 
@@ -121,35 +133,23 @@ namespace VideoTime
                 sw.Stop();
                 elapsedText = string.Format("{0:N0} 毫秒", sw.ElapsedMilliseconds);
 
-                string result = "总时间: " + FormatTime(totalSeconds);
+string result = "总时间: " + FormatTime(totalSeconds);
+                var issues = new List<string>();
                 if (_failCount > 0)
-                    result += $" ({_failCount}个文件读取失败)";
-                ShowTime.Text = result;
-                AppendLog("文件夹: " + folderPath + " | 耗时: " + elapsedText);
-
-                _folderResults.Reverse();
-                DetailTree.BeginUpdate();
-                var nodeMap = new Dictionary<string, TreeNode>();
-                foreach (var r in _folderResults)
+                    issues.Add(_failCount + " 个文件读取失败");
+                if (_dirFail > 0)
+                    issues.Add(_dirFail + " 个目录无法访问");
+                if (_depthSkipped > 0)
+                    issues.Add("超过 " + MaxDepth + " 层的目录已省略");
+                if (issues.Count > 0)
                 {
-                    string folderName = Path.GetFileName(r.FolderPath);
-                    if (string.IsNullOrEmpty(folderName))
-                        folderName = r.FolderPath;
-
-                    TreeNode node = new TreeNode($"{folderName}  {FormatTime(r.TotalSeconds)}  [视频{r.FileCount}]");
-                    node.Tag = r.FolderPath;
-
-                    string parentPath = Path.GetDirectoryName(r.FolderPath);
-                    if (parentPath != null && nodeMap.TryGetValue(parentPath, out TreeNode parent))
-                        parent.Nodes.Add(node);
-                    else
-                        DetailTree.Nodes.Add(node);
-
-                    nodeMap[r.FolderPath] = node;
+                    result += " | " + string.Join("；", issues);
+                    AppendLog("扫描完成但存在缺失: " + string.Join("；", issues) + " | " + folderPath + " | 耗时: " + elapsedText, LogLevel.Warning);
                 }
-                foreach (TreeNode node in DetailTree.Nodes)
-                    ExpandToDepth(node, 1);
-                DetailTree.EndUpdate();
+                ShowTime.Text = result;
+                AppendLog("文件夹: " + folderPath + " | 总时间: " + FormatTime(totalSeconds) + " | 耗时: " + elapsedText);
+
+_folderResults.Reverse();
 
                 _selNode = null;
                 _selStart = 0;
@@ -157,10 +157,39 @@ namespace VideoTime
                 _anchorNode = null;
                 SetDragActive(false);
                 _rightClickNode = null;
+
+                DetailTree.BeginUpdate();
+                try
+                {
+                    var nodeMap = new Dictionary<string, TreeNode>();
+                    foreach (var r in _folderResults)
+                    {
+                        string folderName = Path.GetFileName(r.FolderPath);
+                        if (string.IsNullOrEmpty(folderName))
+                            folderName = r.FolderPath;
+
+                        TreeNode node = new TreeNode($"{folderName}  {FormatTime(r.TotalSeconds)}  [视频{r.FileCount}]");
+                        node.Tag = r.FolderPath;
+
+                        string parentPath = Path.GetDirectoryName(r.FolderPath);
+                        if (parentPath != null && nodeMap.TryGetValue(parentPath, out TreeNode parent))
+                            parent.Nodes.Add(node);
+                        else
+                            DetailTree.Nodes.Add(node);
+
+                        nodeMap[r.FolderPath] = node;
+                    }
+                    foreach (TreeNode node in DetailTree.Nodes)
+                        ExpandToDepth(node, 1);
+                }
+                finally
+                {
+                    DetailTree.EndUpdate();
+                }
             }
             catch (Exception ex)
             {
-                AppendLog("查询异常: " + folderPath + " | " + ex.Message);
+                AppendLog("查询异常: " + folderPath + " | " + ex.Message, LogLevel.Error);
                 MessageBox.Show("查询异常: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally
@@ -178,19 +207,39 @@ namespace VideoTime
                 ExpandToDepth(child, currentDepth + 1);
         }
 
-        private void AppendLog(string line)
+private void AppendLog(string line, LogLevel level = LogLevel.Info)
         {
+            if (!IsLogLevelEnabled(level)) return;
             try
             {
                 string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log.txt");
-                File.AppendAllText(logPath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + line + Environment.NewLine, Encoding.UTF8);
+                string tag = level == LogLevel.Error ? "错误" : (level == LogLevel.Warning ? "警告" : "信息");
+                File.AppendAllText(logPath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  [" + tag + "] " + line + Environment.NewLine, Encoding.UTF8);
             }
             catch { }
-}
+        }
 
-        private static void CollectFoldersRecursive(string path, bool recursive, int depth, List<FolderItem> items)
+        private static bool IsLogLevelEnabled(LogLevel level)
         {
-            if (depth > MaxDepth) return;
+            try
+            {
+                switch (level)
+                {
+                    case LogLevel.Error: return Properties.Settings.Default.LogErrorEnabled;
+                    case LogLevel.Warning: return Properties.Settings.Default.LogWarningEnabled;
+                    default: return Properties.Settings.Default.LogInfoEnabled;
+                }
+            }
+            catch { return true; }
+        }
+
+private void CollectFoldersRecursive(string path, bool recursive, int depth, List<FolderItem> items)
+        {
+            if (depth > MaxDepth)
+            {
+                Interlocked.Increment(ref _depthSkipped);
+                return;
+            }
 
             try
             {
@@ -213,13 +262,13 @@ namespace VideoTime
             }
         }
 
-        private static string[] SafeGetFiles(string path)
+        private string[] SafeGetFiles(string path)
         {
             try { return Directory.GetFiles(path, "*.mp4", SearchOption.TopDirectoryOnly); }
-            catch { return new string[0]; }
+            catch { Interlocked.Increment(ref _dirFail); return new string[0]; }
         }
 
-        private static string[] SafeGetDirectories(string path)
+        private string[] SafeGetDirectories(string path)
         {
             try
             {
@@ -227,10 +276,10 @@ namespace VideoTime
                 if (dirs.Length == 0) return dirs;
                 return Array.FindAll(dirs, d => !IsReparsePoint(d));
             }
-            catch { return new string[0]; }
+            catch { Interlocked.Increment(ref _dirFail); return new string[0]; }
         }
 
-        private static bool IsReparsePoint(string path)
+        private bool IsReparsePoint(string path)
         {
             try
             {
@@ -289,12 +338,13 @@ namespace VideoTime
             return items.Count > 0 ? totals[items[0].FolderPath] : 0;
         }
 
-        private static string FormatTime(double totalSeconds)
+private static string FormatTime(double totalSeconds)
         {
-            double h = totalSeconds / 3600;
-            double m = (totalSeconds % 3600) / 60;
-            double s = totalSeconds % 60;
-            return $"{(int)h}时{(int)m}分{(int)s}秒";
+            long sec = (long)Math.Round(totalSeconds);
+            long h = sec / 3600;
+            long m = (sec % 3600) / 60;
+            long s = sec % 60;
+            return h + "时" + m + "分" + s + "秒";
         }
 
         private void ResetTextBoxSelection()
@@ -457,8 +507,6 @@ namespace VideoTime
                 }
                 if (_anchorNode != null)
                     InvalidateNodeRow(_anchorNode);
-                if (_dragActive && _selNode != null && _selStart < _selEnd)
-                    AppendLog(string.Format("拖选结束: [{0},{1}) \"{2}\"", _selStart, _selEnd, _selNode.Text.Substring(_selStart, _selEnd - _selStart)));
                 _anchorNode = null;
                 SetDragActive(false);
             }
@@ -501,7 +549,11 @@ namespace VideoTime
             if (e.Node == null) return;
             Rectangle bounds = e.Bounds;
             bool selected = (e.State & TreeNodeStates.Selected) != 0;
-            bool hasSubSel = _selNode == e.Node && _selStart < _selEnd;
+            string nodeText = e.Node.Text ?? string.Empty;
+            int textLen = nodeText.Length;
+            int selStart = Math.Max(0, Math.Min(_selStart, textLen));
+            int selEnd = Math.Max(selStart, Math.Min(_selEnd, textLen));
+            bool hasSubSel = _selNode == e.Node && selStart < selEnd;
 
             TextFormatFlags flags = _textFlags;
 
@@ -509,18 +561,18 @@ namespace VideoTime
             {
                 int rowRight = Math.Max(bounds.Right, DetailTree.ClientSize.Width);
                 e.Graphics.FillRectangle(SystemBrushes.Window, new Rectangle(bounds.Left, bounds.Top, rowRight - bounds.Left, bounds.Height));
-                string text = e.Node.Text;
-                int preW = TextRenderer.MeasureText(e.Graphics, text.Substring(0, _selStart), DetailTree.Font, _maxSize, flags).Width;
-                int hlRight = TextRenderer.MeasureText(e.Graphics, text.Substring(0, _selEnd), DetailTree.Font, _maxSize, flags).Width;
+                string text = nodeText;
+                int preW = TextRenderer.MeasureText(e.Graphics, text.Substring(0, selStart), DetailTree.Font, _maxSize, flags).Width;
+                int hlRight = TextRenderer.MeasureText(e.Graphics, text.Substring(0, selEnd), DetailTree.Font, _maxSize, flags).Width;
 
                 Rectangle pre = new Rectangle(bounds.Left, bounds.Top, preW, bounds.Height);
                 Rectangle hl = new Rectangle(bounds.Left + preW, bounds.Top, Math.Max(1, hlRight - preW), bounds.Height);
                 Rectangle suf = new Rectangle(bounds.Left + hlRight, bounds.Top, Math.Max(1, bounds.Width + 200 - hlRight), bounds.Height);
 
-                TextRenderer.DrawText(e.Graphics, text.Substring(0, _selStart), DetailTree.Font, pre, SystemColors.WindowText, flags);
+                TextRenderer.DrawText(e.Graphics, text.Substring(0, selStart), DetailTree.Font, pre, SystemColors.WindowText, flags);
                 e.Graphics.FillRectangle(SystemBrushes.Highlight, hl);
-                TextRenderer.DrawText(e.Graphics, text.Substring(_selStart, _selEnd - _selStart), DetailTree.Font, hl, SystemColors.HighlightText, flags);
-                TextRenderer.DrawText(e.Graphics, text.Substring(_selEnd), DetailTree.Font, suf, SystemColors.WindowText, flags | TextFormatFlags.NoClipping);
+                TextRenderer.DrawText(e.Graphics, text.Substring(selStart, selEnd - selStart), DetailTree.Font, hl, SystemColors.HighlightText, flags);
+                TextRenderer.DrawText(e.Graphics, text.Substring(selEnd), DetailTree.Font, suf, SystemColors.WindowText, flags | TextFormatFlags.NoClipping);
                 return;
             }
 
@@ -528,12 +580,12 @@ namespace VideoTime
             {
                 Rectangle fullRow = new Rectangle(bounds.Left, bounds.Top, Math.Max(1, DetailTree.ClientSize.Width - bounds.Left), bounds.Height);
                 e.Graphics.FillRectangle(SystemBrushes.Highlight, fullRow);
-                TextRenderer.DrawText(e.Graphics, e.Node.Text, DetailTree.Font, bounds, SystemColors.HighlightText, flags);
+                TextRenderer.DrawText(e.Graphics, nodeText, DetailTree.Font, bounds, SystemColors.HighlightText, flags);
             }
             else
             {
                 e.Graphics.FillRectangle(SystemBrushes.Window, bounds);
-                TextRenderer.DrawText(e.Graphics, e.Node.Text, DetailTree.Font, bounds, SystemColors.WindowText, flags);
+                TextRenderer.DrawText(e.Graphics, nodeText, DetailTree.Font, bounds, SystemColors.WindowText, flags);
             }
         }
 
@@ -555,10 +607,10 @@ private void CopyAllText()
                 SafeSetClipboard(text);
         }
 
-        private static void SafeSetClipboard(string text)
+        private void SafeSetClipboard(string text)
         {
             try { Clipboard.SetText(text); }
-            catch (Exception) { }
+            catch (Exception) { AppendLog("复制到剪贴板失败", LogLevel.Warning); }
         }
 
         private string GetVisibleTreeText()
@@ -584,9 +636,10 @@ private void CopyAllText()
 
         private void SaveTreeToImage()
         {
-            string text = GetVisibleTreeText();
+string text = GetVisibleTreeText();
             if (text.Length == 0)
             {
+                AppendLog("保存图片失败: 无可保存的文本内容", LogLevel.Warning);
                 MessageBox.Show("没有可保存的文本内容。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -600,14 +653,16 @@ private void CopyAllText()
                     return;
 
                 ImageFormat format = saveDialog.FilterIndex == 2 ? ImageFormat.Bmp : ImageFormat.Png;
-                try
+try
                 {
                     using (var img = RenderTextToImage(text))
                         img.Save(saveDialog.FileName, format);
+                    AppendLog("图片已保存: " + saveDialog.FileName);
                     MessageBox.Show("图片已保存到:\n" + saveDialog.FileName, "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
                 {
+                    AppendLog("保存失败: " + ex.Message, LogLevel.Error);
                     MessageBox.Show("保存失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }

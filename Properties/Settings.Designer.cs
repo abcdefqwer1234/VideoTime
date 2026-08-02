@@ -56,5 +56,50 @@ namespace VideoTime.Properties
                 this["IncludeSubfolders"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool LogErrorEnabled
+        {
+            get
+            {
+                return ((bool)(this["LogErrorEnabled"]));
+            }
+            set
+            {
+                this["LogErrorEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool LogWarningEnabled
+        {
+            get
+            {
+                return ((bool)(this["LogWarningEnabled"]));
+            }
+            set
+            {
+                this["LogWarningEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool LogInfoEnabled
+        {
+            get
+            {
+                return ((bool)(this["LogInfoEnabled"]));
+            }
+            set
+            {
+                this["LogInfoEnabled"] = value;
+            }
+        }
     }
 }
