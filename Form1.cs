@@ -24,10 +24,16 @@ namespace VideoTime
     public partial class Form1 : Form
     {
         private const int MaxDepth = 50;
+        private const int MaxDetailLines = 200;
+        private static readonly object _logLock = new object();
         private int _failCount = 0;
         private int _dirFail = 0;
         private int _depthSkipped = 0;
         private List<FolderResult> _folderResults = new List<FolderResult>();
+        private List<FailureRecord> _failedFiles = new List<FailureRecord>();
+        private List<FailureRecord> _failedDirs = new List<FailureRecord>();
+        private List<string> _skippedDirs = new List<string>();
+        private System.Threading.CancellationTokenSource _scanCts;
 
         private TreeNode _selNode;
         private int _selStart;
@@ -44,6 +50,12 @@ namespace VideoTime
             public string FolderPath { get; set; }
             public double TotalSeconds { get; set; }
             public int FileCount { get; set; }
+        }
+
+        internal class FailureRecord
+        {
+            public string Path;
+            public string Reason;
         }
 
         private class FolderItem
@@ -114,6 +126,9 @@ string folderPath = TextBox_Doc.Text.Trim().Trim('"');
             _dirFail = 0;
             _depthSkipped = 0;
             _folderResults.Clear();
+            _failedFiles.Clear();
+            _failedDirs.Clear();
+            _skippedDirs.Clear();
             bool recursive = CbSubfolders.Checked;
 
             ShowTime.Text = "正在扫描文件夹…";
@@ -122,14 +137,19 @@ string folderPath = TextBox_Doc.Text.Trim().Trim('"');
 
             Stopwatch sw = Stopwatch.StartNew();
             string elapsedText = "";
+            var cts = new CancellationTokenSource();
+            _scanCts = cts;
             try
             {
                 double totalSeconds = await Task.Run(() =>
                 {
+                    cts.Token.ThrowIfCancellationRequested();
                     var list = new List<FolderItem>();
-                    CollectFoldersRecursive(folderPath, recursive, 0, list);
-                    return ProcessFolderItems(list);
-                });
+                    CollectFoldersRecursive(folderPath, recursive, 0, list, cts.Token);
+                    cts.Token.ThrowIfCancellationRequested();
+                    return ProcessFolderItems(list, cts.Token);
+                }, cts.Token);
+                if (cts.Token.IsCancellationRequested || IsDisposed) return;
                 sw.Stop();
                 elapsedText = string.Format("{0:N0} 毫秒", sw.ElapsedMilliseconds);
 
@@ -142,10 +162,7 @@ string result = "总时间: " + FormatTime(totalSeconds);
                 if (_depthSkipped > 0)
                     issues.Add("超过 " + MaxDepth + " 层的目录已省略");
                 if (issues.Count > 0)
-                {
-                    result += " | " + string.Join("；", issues);
                     AppendLog("扫描完成但存在缺失: " + string.Join("；", issues) + " | " + folderPath + " | 耗时: " + elapsedText, LogLevel.Warning);
-                }
                 ShowTime.Text = result;
                 AppendLog("文件夹: " + folderPath + " | 总时间: " + FormatTime(totalSeconds) + " | 耗时: " + elapsedText);
 
@@ -186,6 +203,18 @@ _folderResults.Reverse();
                 {
                     DetailTree.EndUpdate();
                 }
+
+                if (issues.Count > 0)
+                {
+                    LogFailureDetails();
+                    MessageBox.Show("扫描完成，但存在缺失：\n\n" + string.Join("\n", issues) + "\n\n详细原因已写入日志文件。",
+                        "扫描完成", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                ShowTime.Text = "扫描已取消。";
+                AppendLog("扫描已取消: " + folderPath, LogLevel.Info);
             }
             catch (Exception ex)
             {
@@ -196,6 +225,8 @@ _folderResults.Reverse();
             {
                 Start.Enabled = true;
                 Cursor = Cursors.Default;
+                _scanCts = null;
+                cts.Dispose();
             }
         }
 
@@ -214,9 +245,36 @@ private void AppendLog(string line, LogLevel level = LogLevel.Info)
             {
                 string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log.txt");
                 string tag = level == LogLevel.Error ? "错误" : (level == LogLevel.Warning ? "警告" : "信息");
-                File.AppendAllText(logPath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  [" + tag + "] " + line + Environment.NewLine, Encoding.UTF8);
+                lock (_logLock)
+                {
+                    File.AppendAllText(logPath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  [" + tag + "] " + line + Environment.NewLine, Encoding.UTF8);
+                }
             }
             catch { }
+        }
+
+        private void LogFailureDetails()
+        {
+            WriteFailures(_failedFiles, "文件读取失败");
+            WriteFailures(_failedDirs, "目录无法访问");
+
+            int shown = Math.Min(MaxDetailLines, _skippedDirs.Count);
+            for (int i = 0; i < shown; i++)
+                AppendLog("超过" + MaxDepth + "层目录已省略: " + _skippedDirs[i], LogLevel.Warning);
+            if (_skippedDirs.Count > MaxDetailLines)
+                AppendLog("…其余省略，共 " + _skippedDirs.Count + " 项", LogLevel.Warning);
+        }
+
+        private void WriteFailures(List<FailureRecord> list, string label)
+        {
+            int shown = Math.Min(MaxDetailLines, list.Count);
+            for (int i = 0; i < shown; i++)
+            {
+                FailureRecord it = list[i];
+                AppendLog(label + ": " + it.Path + (string.IsNullOrEmpty(it.Reason) ? "" : "（" + it.Reason + "）"), LogLevel.Warning);
+            }
+            if (list.Count > MaxDetailLines)
+                AppendLog("…其余省略，共 " + list.Count + " 项", LogLevel.Warning);
         }
 
         private static bool IsLogLevelEnabled(LogLevel level)
@@ -233,17 +291,19 @@ private void AppendLog(string line, LogLevel level = LogLevel.Info)
             catch { return true; }
         }
 
-private void CollectFoldersRecursive(string path, bool recursive, int depth, List<FolderItem> items)
+private void CollectFoldersRecursive(string path, bool recursive, int depth, List<FolderItem> items, CancellationToken ct)
         {
+            if (ct.IsCancellationRequested) return;
             if (depth > MaxDepth)
             {
                 Interlocked.Increment(ref _depthSkipped);
+                _skippedDirs.Add(path);
                 return;
             }
 
             try
             {
-                string[] files = SafeGetFiles(path);
+                string[] files = Directory.GetFiles(path, "*.mp4", SearchOption.TopDirectoryOnly);
                 string[] subDirs = recursive ? SafeGetDirectories(path) : new string[0];
 
                 items.Add(new FolderItem
@@ -254,29 +314,20 @@ private void CollectFoldersRecursive(string path, bool recursive, int depth, Lis
                 });
 
                 foreach (string dir in subDirs)
-                    CollectFoldersRecursive(dir, recursive, depth + 1, items);
+                    CollectFoldersRecursive(dir, recursive, depth + 1, items, ct);
             }
-            catch
+            catch (Exception ex)
             {
-                // 单个目录枚举出错不影响其余部分
+                Interlocked.Increment(ref _dirFail);
+                _failedDirs.Add(new FailureRecord { Path = path, Reason = Mp4Parse.ShortReason(ex) });
             }
-        }
-
-        private string[] SafeGetFiles(string path)
-        {
-            try { return Directory.GetFiles(path, "*.mp4", SearchOption.TopDirectoryOnly); }
-            catch { Interlocked.Increment(ref _dirFail); return new string[0]; }
         }
 
         private string[] SafeGetDirectories(string path)
         {
-            try
-            {
-                string[] dirs = Directory.GetDirectories(path);
-                if (dirs.Length == 0) return dirs;
-                return Array.FindAll(dirs, d => !IsReparsePoint(d));
-            }
-            catch { Interlocked.Increment(ref _dirFail); return new string[0]; }
+            string[] dirs = Directory.GetDirectories(path);
+            if (dirs.Length == 0) return dirs;
+            return Array.FindAll(dirs, d => !IsReparsePoint(d));
         }
 
         private bool IsReparsePoint(string path)
@@ -289,20 +340,22 @@ private void CollectFoldersRecursive(string path, bool recursive, int depth, Lis
             catch { return true; }
         }
 
-        private double ProcessFolderItems(List<FolderItem> items)
+        private double ProcessFolderItems(List<FolderItem> items, CancellationToken ct)
         {
             var files = new List<string>();
             foreach (var it in items) files.AddRange(it.Files);
 
             int threads = Math.Max(2, Environment.ProcessorCount);
-            Dictionary<string, double> perFile = Mp4Parse.ReadAll(files, out int fail, threads);
+            Dictionary<string, double> perFile = Mp4Parse.ReadAll(files, out int fail, out List<FailureRecord> failed, threads, ct);
             if (fail > 0) _failCount += fail;
+            if (failed.Count > 0) _failedFiles.AddRange(failed);
 
             var totals = new Dictionary<string, double>();
             var counts = new Dictionary<string, int>();
 
             for (int i = items.Count - 1; i >= 0; i--)
             {
+                ct.ThrowIfCancellationRequested();
                 var item = items[i];
 
                 double localTotal = 0;
@@ -340,7 +393,7 @@ private void CollectFoldersRecursive(string path, bool recursive, int depth, Lis
 
 private static string FormatTime(double totalSeconds)
         {
-            long sec = (long)Math.Round(totalSeconds);
+            long sec = (long)Math.Floor(totalSeconds);
             long h = sec / 3600;
             long m = (sec % 3600) / 60;
             long s = sec % 60;
@@ -373,8 +426,10 @@ private static string FormatTime(double totalSeconds)
             this.Size = new Size(Math.Min(this.Width, wa.Width), Math.Min(this.Height, wa.Height));
         }
 
-        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
+            if (_scanCts != null)
+                _scanCts.Cancel();
             Properties.Settings.Default.FolderPath = TextBox_Doc.Text;
             Properties.Settings.Default.IncludeSubfolders = CbSubfolders.Checked;
             Properties.Settings.Default.Save();
@@ -718,54 +773,122 @@ try
     {
         public static Dictionary<string, double> ReadAll(List<string> files, out int fail, int threads)
         {
+            return ReadAll(files, out fail, out List<Form1.FailureRecord> ignored, threads, CancellationToken.None);
+        }
+
+        internal static Dictionary<string, double> ReadAll(List<string> files, out int fail, out List<Form1.FailureRecord> failed, int threads, CancellationToken ct = default)
+        {
             var result = new ConcurrentDictionary<string, double>();
+            var failures = new ConcurrentBag<Form1.FailureRecord>();
             int f = 0;
-            Parallel.ForEach(files, new ParallelOptions { MaxDegreeOfParallelism = threads }, path =>
+            var opts = new ParallelOptions { MaxDegreeOfParallelism = threads, CancellationToken = ct };
+            Parallel.ForEach(files, opts, path =>
             {
-                double d = ParseFile(path);
+                ct.ThrowIfCancellationRequested();
+                double d = ParseFile(path, out string reason);
                 if (d >= 0) result[path] = d;
-                else Interlocked.Increment(ref f);
+                else
+                {
+                    Interlocked.Increment(ref f);
+                    failures.Add(new Form1.FailureRecord { Path = path, Reason = reason });
+                }
             });
             fail = f;
+            failed = new List<Form1.FailureRecord>(failures);
             return new Dictionary<string, double>(result);
+        }
+
+        internal static string ShortReason(Exception ex)
+        {
+            string msg = ex.GetType().Name + ": " + ex.Message;
+            if (msg.Length > 200) msg = msg.Substring(0, 200) + "…";
+            return msg;
         }
 
         public static double ParseFile(string path)
         {
+            return ParseFile(path, out _);
+        }
+
+        internal static double ParseFile(string path, out string reason)
+        {
+            reason = "";
             try
             {
                 using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 {
                     long fileLen = fs.Length;
-                    if (fileLen < 16) return -1;
-
-                    long tailSize = Math.Min(4L << 20, fileLen);
-                    byte[] buf = new byte[tailSize];
-                    while (true)
+                    if (fileLen < 16)
                     {
-                        fs.Position = fileLen - tailSize;
-                        int read = fs.Read(buf, 0, buf.Length);
-                        for (int i = 0; i + 8 <= read; i++)
-                        {
-                            if (buf[i + 4] == 'm' && buf[i + 5] == 'o' && buf[i + 6] == 'o' && buf[i + 7] == 'v')
-                            {
-                                long boxStart = fileLen - tailSize + i;
-                                long boxSize = BE32(buf, i);
-                                if (boxSize >= 8 && boxStart + boxSize <= fileLen)
-                                {
-                                    double d = ParseMoov(fs, boxStart, boxSize);
-                                    if (d >= 0) return d;
-                                }
-                            }
-                        }
-                        if (tailSize >= fileLen) break;
-                        tailSize = Math.Min(tailSize * 2, fileLen);
-                        buf = new byte[tailSize];
+                        reason = "文件过小(<16字节)";
+                        return -1;
                     }
+
+                    const long MinWindow = 4L << 20;
+                    const long MaxWindow = 128L << 20;
+                    long headLen = Math.Min(MinWindow, fileLen);
+
+                    double tail = ScanWindow(fs, fileLen - headLen, headLen, fileLen, out string tailReason);
+                    if (tail >= 0) return tail;
+
+                    reason = tailReason;
+                    if (fileLen > headLen)
+                    {
+                        double head = ScanWindow(fs, 0, headLen, fileLen, out string headReason);
+                        if (head >= 0) return head;
+                        if (!string.IsNullOrEmpty(headReason)) reason = headReason;
+                    }
+
+                    long window = MinWindow * 2;
+                    while (window <= fileLen && window <= MaxWindow)
+                    {
+                        double grown = ScanWindow(fs, fileLen - window, window, fileLen, out string growReason);
+                        if (grown >= 0) return grown;
+                        if (!string.IsNullOrEmpty(growReason)) reason = growReason;
+                        if (window >= fileLen) break;
+                        window *= 2;
+                    }
+
+                    if (string.IsNullOrEmpty(reason)) reason = "未找到有效moov元数据";
                     return -1;
                 }
             }
-            catch { return -1; }
+            catch (Exception ex)
+            {
+                reason = ShortReason(ex);
+                return -1;
+            }
+        }
+
+        private static double ScanWindow(FileStream fs, long start, long len, long fileLen, out string reason)
+        {
+            reason = "";
+            try
+            {
+                byte[] buf = new byte[len];
+                fs.Position = start;
+                int read = fs.Read(buf, 0, buf.Length);
+                for (int i = 0; i + 8 <= read; i++)
+                {
+                    if (buf[i + 4] == 'm' && buf[i + 5] == 'o' && buf[i + 6] == 'o' && buf[i + 7] == 'v')
+                    {
+                        long boxStart = start + i;
+                        long boxSize = BE32(buf, i);
+                        if (boxSize >= 8 && boxStart + boxSize <= fileLen)
+                        {
+                            double d = ParseMoov(fs, boxStart, boxSize);
+                            if (d >= 0) return d;
+                            reason = "moov元数据损坏或不支持";
+                        }
+                    }
+                }
+                return -1;
+            }
+            catch (Exception ex)
+            {
+                reason = ShortReason(ex);
+                return -1;
+            }
         }
 
         private static double ParseMoov(FileStream fs, long boxStart, long boxSize)
