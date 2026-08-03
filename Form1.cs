@@ -16,7 +16,7 @@ namespace VideoTime
     {
         private const int MaxDetailLines = 200;
         private const int TreeTop = 176;
-        private const int TreeBottomGap = 25;
+        private const int BottomMargin = 25;
         private const int ProgressTreeGap = 8;
         private const int ProgressBarLabelGap = 2;
         private System.Threading.CancellationTokenSource _scanCts;
@@ -32,6 +32,8 @@ namespace VideoTime
         private TreeNode _rightClickNode;
         private ToolStripMenuItem _copyNodeItem;
         private ToolStripMenuItem _exportItem;
+        private TreeNode _cachedWidthsNode;
+        private int[] _cachedWidths;
 
         public Form1()
         {
@@ -187,13 +189,13 @@ namespace VideoTime
         private void SetProgressVisible(bool visible)
         {
             if (IsDisposed) return;
-            ProgressBar.Location = new Point(ProgressBar.Left, ClientSize.Height - (TreeBottomGap - ProgressTreeGap) - ProgressBar.Height);
+            ProgressBar.Location = new Point(ProgressBar.Left, ClientSize.Height - (BottomMargin - ProgressTreeGap) - ProgressBar.Height);
             LblProgress.Location = new Point(LblProgress.Left, ProgressBar.Top - ProgressBarLabelGap - LblProgress.Height);
             LblProgress.Visible = visible;
             ProgressBar.Visible = visible;
             int reserve = visible ? (ProgressBar.Height + ProgressBarLabelGap + LblProgress.Height) : 0;
             DetailTree.Location = new Point(DetailTree.Left, TreeTop);
-            DetailTree.Height = ClientSize.Height - TreeTop - TreeBottomGap - reserve;
+            DetailTree.Height = ClientSize.Height - TreeTop - BottomMargin - reserve;
         }
 
         private void ResetProgressUI()
@@ -228,6 +230,8 @@ namespace VideoTime
             _selStart = 0;
             _selEnd = 0;
             _anchorNode = null;
+            _cachedWidthsNode = null;
+            _cachedWidths = null;
             SetDragActive(false);
             _rightClickNode = null;
 
@@ -264,7 +268,7 @@ namespace VideoTime
         private void ExpandToDepth(TreeNode node, int currentDepth)
         {
             node.Expand();
-            if (currentDepth >= 2) return;
+            if (currentDepth >= 3) return;
             foreach (TreeNode child in node.Nodes)
                 ExpandToDepth(child, currentDepth + 1);
         }
@@ -414,6 +418,8 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
                 _selNode = null;
                 _selStart = 0;
                 _selEnd = 0;
+                _cachedWidthsNode = null;
+                _cachedWidths = null;
                 if (prevSel != null)
                     InvalidateNodeRow(prevSel);
             }
@@ -479,16 +485,21 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
             int len = text.Length;
             if (len == 0) return 0;
 
-            int[] widths = new int[len];
-            int total = 0;
-            using (Graphics g = DetailTree.CreateGraphics())
+            int[] widths;
+            if (node == _cachedWidthsNode && _cachedWidths != null && _cachedWidths.Length == len)
             {
-                for (int i = 0; i < len; i++)
+                widths = _cachedWidths;
+            }
+            else
+            {
+                widths = new int[len];
+                using (Graphics g = DetailTree.CreateGraphics())
                 {
-                    int w = TextRenderer.MeasureText(g, text[i].ToString(), DetailTree.Font, _maxSize, _textFlags).Width;
-                    widths[i] = w;
-                    total += w;
+                    for (int i = 0; i < len; i++)
+                        widths[i] = TextRenderer.MeasureText(g, text[i].ToString(), DetailTree.Font, _maxSize, _textFlags).Width;
                 }
+                _cachedWidthsNode = node;
+                _cachedWidths = widths;
             }
 
             int idx = len;

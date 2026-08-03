@@ -21,9 +21,16 @@ namespace VideoTime
 
         public static string[] GetVideoFiles(string folder)
         {
-            string[] all = Directory.GetFiles(folder);
-            if (all.Length == 0) return all;
-            return Array.FindAll(all, IsVideoFile);
+            try
+            {
+                string[] all = Directory.GetFiles(folder);
+                if (all.Length == 0) return all;
+                return Array.FindAll(all, IsVideoFile);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return new string[0];
+            }
         }
 
         public static Dictionary<string, double> ReadAll(List<string> files, out int fail, int threads)

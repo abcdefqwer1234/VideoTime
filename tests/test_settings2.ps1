@@ -1,7 +1,12 @@
 ﻿param(
     [string]$ExePath = (Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) 'bin\Debug\VideoTime.exe'),
-    [string]$UserConfigPath = 'C:\Users\yangheran\AppData\Local\VideoTime\VideoTime.exe_Url_u1rbtkthmshreww3jw32a1vlsmu30kf4\1.0.0.0\user.config'
+    [string]$UserConfigPath = ''
 )
+if (-not $UserConfigPath) {
+    $cfgDir = Join-Path $env:LOCALAPPDATA 'VideoTime'
+    $found = Get-ChildItem $cfgDir -Filter 'user.config' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { $UserConfigPath = $found.FullName }
+}
 $ErrorActionPreference = 'Stop'
 $script:Pass = 0
 $script:Fail = 0

@@ -2,8 +2,13 @@
 # 用法: powershell -ExecutionPolicy Bypass -File tests\run-tests.ps1 [-ExePath <path>] [-UserConfig <path>]
 param(
     [string]$ExePath = '',
-    [string]$UserConfig = 'C:\Users\yangheran\AppData\Local\VideoTime\VideoTime.exe_Url_u1rbtkthmshreww3jw32a1vlsmu30kf4\1.0.0.0\user.config'
+    [string]$UserConfig = ''
 )
+if (-not $UserConfig) {
+    $cfgDir = Join-Path $env:LOCALAPPDATA 'VideoTime'
+    $found = Get-ChildItem $cfgDir -Filter 'user.config' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { $UserConfig = $found.FullName } else { $UserConfig = '' }
+}
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
