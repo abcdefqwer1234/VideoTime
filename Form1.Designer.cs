@@ -31,10 +31,14 @@
             System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(Form1));
             this.TextBox_Doc = new System.Windows.Forms.TextBox();
             this.请选择文件夹 = new System.Windows.Forms.Label();
-            this.ShowTime = new System.Windows.Forms.Label();
+            this.ShowTime = new System.Windows.Forms.TextBox();
             this.Start = new System.Windows.Forms.Button();
             this.BtnBrowse = new System.Windows.Forms.Button();
+            this.BtnSettings = new System.Windows.Forms.Button();
+            this.BtnCancel = new System.Windows.Forms.Button();
             this.CbSubfolders = new System.Windows.Forms.CheckBox();
+            this.LblProgress = new System.Windows.Forms.Label();
+            this.ProgressBar = new System.Windows.Forms.ProgressBar();
             this.folderBrowserDialog1 = new System.Windows.Forms.FolderBrowserDialog();
             this.DetailTree = new VideoTime.BufferedTreeView();
             this.SuspendLayout();
@@ -66,17 +70,21 @@
             // 
             this.ShowTime.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
+            this.ShowTime.BackColor = System.Drawing.SystemColors.Control;
+            this.ShowTime.BorderStyle = System.Windows.Forms.BorderStyle.None;
             this.ShowTime.Font = new System.Drawing.Font("宋体", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.ShowTime.Location = new System.Drawing.Point(30, 105);
             this.ShowTime.Name = "ShowTime";
-            this.ShowTime.Size = new System.Drawing.Size(360, 25);
+            this.ShowTime.ReadOnly = true;
+            this.ShowTime.Size = new System.Drawing.Size(360, 16);
             this.ShowTime.TabIndex = 2;
+            this.ShowTime.TabStop = false;
             this.ShowTime.Text = "总时间: ";
             // 
             // Start
             // 
             this.Start.Font = new System.Drawing.Font("宋体", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.Start.Location = new System.Drawing.Point(30, 134);
+            this.Start.Location = new System.Drawing.Point(30, 132);
             this.Start.Name = "Start";
             this.Start.Size = new System.Drawing.Size(75, 30);
             this.Start.TabIndex = 3;
@@ -96,6 +104,30 @@
             this.BtnBrowse.UseVisualStyleBackColor = true;
             this.BtnBrowse.Click += new System.EventHandler(this.BtnBrowse_Click);
             // 
+            // BtnSettings
+            // 
+            this.BtnSettings.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.BtnSettings.Font = new System.Drawing.Font("宋体", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnSettings.Location = new System.Drawing.Point(336, 25);
+            this.BtnSettings.Name = "BtnSettings";
+            this.BtnSettings.Size = new System.Drawing.Size(55, 24);
+            this.BtnSettings.TabIndex = 7;
+            this.BtnSettings.Text = "设置";
+            this.BtnSettings.UseVisualStyleBackColor = true;
+            this.BtnSettings.Click += new System.EventHandler(this.BtnSettings_Click);
+            // 
+            // BtnCancel
+            // 
+            this.BtnCancel.Enabled = false;
+            this.BtnCancel.Font = new System.Drawing.Font("宋体", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnCancel.Location = new System.Drawing.Point(115, 132);
+            this.BtnCancel.Name = "BtnCancel";
+            this.BtnCancel.Size = new System.Drawing.Size(75, 30);
+            this.BtnCancel.TabIndex = 8;
+            this.BtnCancel.Text = "取消";
+            this.BtnCancel.UseVisualStyleBackColor = true;
+            this.BtnCancel.Click += new System.EventHandler(this.BtnCancel_Click);
+            // 
             // CbSubfolders
             // 
             this.CbSubfolders.AutoSize = true;
@@ -107,26 +139,51 @@
             this.CbSubfolders.Text = "包含子文件夹";
             this.CbSubfolders.UseVisualStyleBackColor = true;
             // 
+            // LblProgress
+            // 
+            this.LblProgress.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left) 
+            | System.Windows.Forms.AnchorStyles.Right)));
+            this.LblProgress.AutoEllipsis = true;
+            this.LblProgress.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.LblProgress.Location = new System.Drawing.Point(30, 515);
+            this.LblProgress.Name = "LblProgress";
+            this.LblProgress.Size = new System.Drawing.Size(360, 16);
+            this.LblProgress.TabIndex = 9;
+            // 
+            // ProgressBar
+            // 
+            this.ProgressBar.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left) 
+            | System.Windows.Forms.AnchorStyles.Right)));
+            this.ProgressBar.Location = new System.Drawing.Point(30, 533);
+            this.ProgressBar.Name = "ProgressBar";
+            this.ProgressBar.Size = new System.Drawing.Size(360, 20);
+            this.ProgressBar.TabIndex = 10;
+            // 
             // DetailTree
             // 
             this.DetailTree.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) 
             | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
+            this.DetailTree.DragActive = false;
             this.DetailTree.Font = new System.Drawing.Font("新宋体", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.DetailTree.FullRowSelect = true;
             this.DetailTree.HideSelection = false;
-            this.DetailTree.Location = new System.Drawing.Point(30, 181);
+            this.DetailTree.Location = new System.Drawing.Point(30, 176);
             this.DetailTree.Name = "DetailTree";
-            this.DetailTree.Size = new System.Drawing.Size(360, 301);
+            this.DetailTree.Size = new System.Drawing.Size(360, 369);
             this.DetailTree.TabIndex = 6;
             this.DetailTree.KeyDown += new System.Windows.Forms.KeyEventHandler(this.DetailTree_KeyDown);
             // 
             // Form1
             // 
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
-            this.ClientSize = new System.Drawing.Size(420, 512);
+            this.ClientSize = new System.Drawing.Size(420, 570);
             this.Controls.Add(this.DetailTree);
+            this.Controls.Add(this.ProgressBar);
+            this.Controls.Add(this.LblProgress);
             this.Controls.Add(this.CbSubfolders);
+            this.Controls.Add(this.BtnCancel);
+            this.Controls.Add(this.BtnSettings);
             this.Controls.Add(this.BtnBrowse);
             this.Controls.Add(this.Start);
             this.Controls.Add(this.ShowTime);
@@ -148,10 +205,14 @@
 
         private System.Windows.Forms.TextBox TextBox_Doc;
         private System.Windows.Forms.Label 请选择文件夹;
-        private System.Windows.Forms.Label ShowTime;
+        private System.Windows.Forms.TextBox ShowTime;
         private System.Windows.Forms.Button Start;
         private System.Windows.Forms.Button BtnBrowse;
+        private System.Windows.Forms.Button BtnSettings;
+        private System.Windows.Forms.Button BtnCancel;
         private System.Windows.Forms.CheckBox CbSubfolders;
+        private System.Windows.Forms.Label LblProgress;
+        private System.Windows.Forms.ProgressBar ProgressBar;
         private VideoTime.BufferedTreeView DetailTree;
         private System.Windows.Forms.ContextMenuStrip DetailContextMenu;
         private System.Windows.Forms.FolderBrowserDialog folderBrowserDialog1;

@@ -13,3 +13,6 @@
 
 ## 运行时日志
 log.txt
+
+## 测试辅助程序（编译产物）
+tests/CollectProgress.dll

@@ -59,46 +59,16 @@ namespace VideoTime.Properties
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("True")]
-        public bool LogErrorEnabled
+        [global::System.Configuration.DefaultSettingValueAttribute("Info")]
+        public VideoTime.LogLevel LogOutputLevel
         {
             get
             {
-                return ((bool)(this["LogErrorEnabled"]));
+                return ((VideoTime.LogLevel)(this["LogOutputLevel"]));
             }
             set
             {
-                this["LogErrorEnabled"] = value;
-            }
-        }
-
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("True")]
-        public bool LogWarningEnabled
-        {
-            get
-            {
-                return ((bool)(this["LogWarningEnabled"]));
-            }
-            set
-            {
-                this["LogWarningEnabled"] = value;
-            }
-        }
-
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("True")]
-        public bool LogInfoEnabled
-        {
-            get
-            {
-                return ((bool)(this["LogInfoEnabled"]));
-            }
-            set
-            {
-                this["LogInfoEnabled"] = value;
+                this["LogOutputLevel"] = value;
             }
         }
     }

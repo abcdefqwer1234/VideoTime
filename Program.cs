@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace VideoTime
@@ -9,11 +10,51 @@ namespace VideoTime
         /// 应用程序的主入口点。
         /// </summary>
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
+            if (args.Length > 0)
+            {
+                int exitCode;
+                if (CliRunner.TryRun(args, out exitCode))
+                {
+                    Environment.Exit(exitCode);
+                    return;
+                }
+            }
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            Application.ThreadException += Application_ThreadException;
+            AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+
             Application.Run(new Form1());
+        }
+
+        private static void Application_ThreadException(object sender, ThreadExceptionEventArgs e)
+        {
+            HandleError(e.Exception, "界面线程发生未处理异常");
+        }
+
+        private static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            HandleError(e.ExceptionObject as Exception, "程序发生未处理异常");
+        }
+
+        private static void HandleError(Exception ex, string message)
+        {
+            string detail = ex == null ? "" : ex.ToString();
+            try
+            {
+                Log.Append(message + ": " + detail, LogLevel.Error);
+            }
+            catch { }
+            try
+            {
+                MessageBox.Show(message + "：\n" + (ex == null ? "" : ex.Message),
+                    "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch { }
         }
     }
 }

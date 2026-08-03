@@ -1,12 +1,10 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,26 +12,15 @@ using System.Windows.Forms;
 
 namespace VideoTime
 {
-    public enum LogLevel
-    {
-        Error = 0,
-        Warning = 1,
-        Info = 2
-    }
-
     public partial class Form1 : Form
     {
-        private const int MaxDepth = 50;
         private const int MaxDetailLines = 200;
-        private static readonly object _logLock = new object();
-        private int _failCount = 0;
-        private int _dirFail = 0;
-        private int _depthSkipped = 0;
-        private List<FolderResult> _folderResults = new List<FolderResult>();
-        private List<FailureRecord> _failedFiles = new List<FailureRecord>();
-        private List<FailureRecord> _failedDirs = new List<FailureRecord>();
-        private List<string> _skippedDirs = new List<string>();
+        private const int TreeTop = 176;
+        private const int TreeBottomGap = 25;
+        private const int ProgressTreeGap = 8;
+        private const int ProgressBarLabelGap = 2;
         private System.Threading.CancellationTokenSource _scanCts;
+        private ScanResult _lastResult;
 
         private TreeNode _selNode;
         private int _selStart;
@@ -44,26 +31,7 @@ namespace VideoTime
         private bool _dragActive;
         private TreeNode _rightClickNode;
         private ToolStripMenuItem _copyNodeItem;
-
-        private class FolderResult
-        {
-            public string FolderPath { get; set; }
-            public double TotalSeconds { get; set; }
-            public int FileCount { get; set; }
-        }
-
-        internal class FailureRecord
-        {
-            public string Path;
-            public string Reason;
-        }
-
-        private class FolderItem
-        {
-            public string FolderPath { get; set; }
-            public string[] Files { get; set; }
-            public string[] SubDirs { get; set; }
-        }
+        private ToolStripMenuItem _exportItem;
 
         public Form1()
         {
@@ -81,6 +49,9 @@ namespace VideoTime
             _copyNodeItem = new ToolStripMenuItem("复制");
             _copyNodeItem.Click += DetailContextMenu_CopyNode_Click;
             DetailContextMenu.Items.Add(_copyNodeItem);
+            _exportItem = new ToolStripMenuItem("导出报表…");
+            _exportItem.Click += DetailContextMenu_ExportReport_Click;
+            DetailContextMenu.Items.Add(_exportItem);
             DetailContextMenu.Opening += DetailContextMenu_Opening;
             DetailTree.ContextMenuStrip = DetailContextMenu;
 
@@ -111,7 +82,7 @@ namespace VideoTime
 
         private async void Start_Click(object sender, EventArgs e)
         {
-string folderPath = TextBox_Doc.Text.Trim().Trim('"');
+            string folderPath = TextBox_Doc.Text.Trim().Trim('"');
 
             if (!Directory.Exists(folderPath))
             {
@@ -121,92 +92,54 @@ string folderPath = TextBox_Doc.Text.Trim().Trim('"');
             }
 
             DetailTree.Nodes.Clear();
-
-            _failCount = 0;
-            _dirFail = 0;
-            _depthSkipped = 0;
-            _folderResults.Clear();
-            _failedFiles.Clear();
-            _failedDirs.Clear();
-            _skippedDirs.Clear();
+            _lastResult = null;
             bool recursive = CbSubfolders.Checked;
 
             ShowTime.Text = "正在扫描文件夹…";
             Start.Enabled = false;
+            BtnCancel.Enabled = true;
             Cursor = Cursors.WaitCursor;
+            SetProgressVisible(true);
+            ProgressBar.Style = ProgressBarStyle.Marquee;
+            LblProgress.Text = "正在收集目录…";
 
             Stopwatch sw = Stopwatch.StartNew();
             string elapsedText = "";
             var cts = new CancellationTokenSource();
             _scanCts = cts;
+            var progress = new UiProgress(this, UpdateProgress);
             try
             {
-                double totalSeconds = await Task.Run(() =>
-                {
-                    cts.Token.ThrowIfCancellationRequested();
-                    var list = new List<FolderItem>();
-                    CollectFoldersRecursive(folderPath, recursive, 0, list, cts.Token);
-                    cts.Token.ThrowIfCancellationRequested();
-                    return ProcessFolderItems(list, cts.Token);
-                }, cts.Token);
+                ScanResult result = await Task.Run(() => VideoScanner.Run(folderPath, recursive, cts.Token, progress), cts.Token);
                 if (cts.Token.IsCancellationRequested || IsDisposed) return;
                 sw.Stop();
                 elapsedText = string.Format("{0:N0} 毫秒", sw.ElapsedMilliseconds);
+                _lastResult = result;
 
-string result = "总时间: " + FormatTime(totalSeconds);
+                string resultText = "总时间: " + VideoScanner.Format(result.TotalSeconds);
                 var issues = new List<string>();
-                if (_failCount > 0)
-                    issues.Add(_failCount + " 个文件读取失败");
-                if (_dirFail > 0)
-                    issues.Add(_dirFail + " 个目录无法访问");
-                if (_depthSkipped > 0)
-                    issues.Add("超过 " + MaxDepth + " 层的目录已省略");
+                if (result.FailCount > 0)
+                    issues.Add(result.FailCount + " 个文件读取失败");
+                if (result.DirFail > 0)
+                    issues.Add(result.DirFail + " 个目录无法访问");
+                if (result.DepthSkipped > 0)
+                    issues.Add(VideoScanner.DepthSkippedLabel(VideoScanner.MaxDepth));
                 if (issues.Count > 0)
                     AppendLog("扫描完成但存在缺失: " + string.Join("；", issues) + " | " + folderPath + " | 耗时: " + elapsedText, LogLevel.Warning);
-                ShowTime.Text = result;
-                AppendLog("文件夹: " + folderPath + " | 总时间: " + FormatTime(totalSeconds) + " | 耗时: " + elapsedText);
+                ShowTime.Text = resultText;
+                AppendLog("文件夹: " + folderPath + " | 总时间: " + VideoScanner.Format(result.TotalSeconds) + " | 耗时: " + elapsedText);
 
-_folderResults.Reverse();
-
-                _selNode = null;
-                _selStart = 0;
-                _selEnd = 0;
-                _anchorNode = null;
-                SetDragActive(false);
-                _rightClickNode = null;
-
-                DetailTree.BeginUpdate();
-                try
-                {
-                    var nodeMap = new Dictionary<string, TreeNode>();
-                    foreach (var r in _folderResults)
-                    {
-                        string folderName = Path.GetFileName(r.FolderPath);
-                        if (string.IsNullOrEmpty(folderName))
-                            folderName = r.FolderPath;
-
-                        TreeNode node = new TreeNode($"{folderName}  {FormatTime(r.TotalSeconds)}  [视频{r.FileCount}]");
-                        node.Tag = r.FolderPath;
-
-                        string parentPath = Path.GetDirectoryName(r.FolderPath);
-                        if (parentPath != null && nodeMap.TryGetValue(parentPath, out TreeNode parent))
-                            parent.Nodes.Add(node);
-                        else
-                            DetailTree.Nodes.Add(node);
-
-                        nodeMap[r.FolderPath] = node;
-                    }
-                    foreach (TreeNode node in DetailTree.Nodes)
-                        ExpandToDepth(node, 1);
-                }
-                finally
-                {
-                    DetailTree.EndUpdate();
-                }
+                int totalFiles = result.FolderResults.Count > 0 ? result.FolderResults[0].FileCount : 0;
+                UpdateProgress(new ScanProgress { Phase = "parse", Processed = totalFiles, Total = totalFiles });
+                BuildTree(result);
+                BtnCancel.Enabled = false;
+                await Task.Delay(500);
+                if (!IsDisposed)
+                    SetProgressVisible(false);
 
                 if (issues.Count > 0)
                 {
-                    LogFailureDetails();
+                    LogFailureDetails(result);
                     MessageBox.Show("扫描完成，但存在缺失：\n\n" + string.Join("\n", issues) + "\n\n详细原因已写入日志文件。",
                         "扫描完成", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
@@ -215,18 +148,116 @@ _folderResults.Reverse();
             {
                 ShowTime.Text = "扫描已取消。";
                 AppendLog("扫描已取消: " + folderPath, LogLevel.Info);
+                ResetProgressUI();
             }
             catch (Exception ex)
             {
                 AppendLog("查询异常: " + folderPath + " | " + ex.Message, LogLevel.Error);
                 MessageBox.Show("查询异常: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ResetProgressUI();
             }
             finally
             {
                 Start.Enabled = true;
+                BtnCancel.Enabled = false;
                 Cursor = Cursors.Default;
                 _scanCts = null;
                 cts.Dispose();
+            }
+        }
+
+        private void UpdateProgress(ScanProgress p)
+        {
+            if (IsDisposed) return;
+            if (p.Phase == "collect")
+            {
+                ProgressBar.Style = ProgressBarStyle.Marquee;
+                LblProgress.Text = "正在收集目录…";
+                return;
+            }
+            if (p.Phase == "parse")
+            {
+                ProgressBar.Style = ProgressBarStyle.Blocks;
+                int pct = p.Total > 0 ? (int)(p.Processed * 100L / p.Total) : 0;
+                ProgressBar.Value = Math.Max(0, Math.Min(100, pct));
+                LblProgress.Text = string.Format("正在读取 {0}% ({1}/{2})", pct, p.Processed, p.Total);
+            }
+        }
+
+        private void SetProgressVisible(bool visible)
+        {
+            if (IsDisposed) return;
+            ProgressBar.Location = new Point(ProgressBar.Left, ClientSize.Height - (TreeBottomGap - ProgressTreeGap) - ProgressBar.Height);
+            LblProgress.Location = new Point(LblProgress.Left, ProgressBar.Top - ProgressBarLabelGap - LblProgress.Height);
+            LblProgress.Visible = visible;
+            ProgressBar.Visible = visible;
+            int reserve = visible ? (ProgressBar.Height + ProgressBarLabelGap + LblProgress.Height) : 0;
+            DetailTree.Location = new Point(DetailTree.Left, TreeTop);
+            DetailTree.Height = ClientSize.Height - TreeTop - TreeBottomGap - reserve;
+        }
+
+        private void ResetProgressUI()
+        {
+            if (IsDisposed) return;
+            ProgressBar.Style = ProgressBarStyle.Blocks;
+            ProgressBar.Value = 0;
+            LblProgress.Text = "";
+            SetProgressVisible(false);
+        }
+
+        private void BtnCancel_Click(object sender, EventArgs e)
+        {
+            if (_scanCts != null)
+            {
+                ShowTime.Text = "正在取消…";
+                _scanCts.Cancel();
+            }
+        }
+
+        private void BtnSettings_Click(object sender, EventArgs e)
+        {
+            using (var dlg = new SettingsForm())
+            {
+                dlg.ShowDialog(this);
+            }
+        }
+
+        private void BuildTree(ScanResult result)
+        {
+            _selNode = null;
+            _selStart = 0;
+            _selEnd = 0;
+            _anchorNode = null;
+            SetDragActive(false);
+            _rightClickNode = null;
+
+            DetailTree.BeginUpdate();
+            try
+            {
+                var nodeMap = new Dictionary<string, TreeNode>();
+                foreach (var r in result.FolderResults)
+                {
+                    string folderName = Path.GetFileName(r.FolderPath);
+                    if (string.IsNullOrEmpty(folderName))
+                        folderName = r.FolderPath;
+
+                    TreeNode node = new TreeNode($"{folderName}  {VideoScanner.Format(r.TotalSeconds)}  [视频{r.FileCount}]");
+                    node.Tag = r.FolderPath;
+
+                    string parentPath = Path.GetDirectoryName(r.FolderPath);
+                    if (parentPath != null && nodeMap.TryGetValue(parentPath, out TreeNode parent))
+                        parent.Nodes.Add(node);
+                    else
+                        DetailTree.Nodes.Add(node);
+
+                    nodeMap[r.FolderPath] = node;
+                }
+                foreach (TreeNode node in DetailTree.Nodes)
+                    ExpandToDepth(node, 1);
+            }
+            finally
+            {
+                DetailTree.EndUpdate();
             }
         }
 
@@ -238,31 +269,21 @@ _folderResults.Reverse();
                 ExpandToDepth(child, currentDepth + 1);
         }
 
-private void AppendLog(string line, LogLevel level = LogLevel.Info)
+        private void AppendLog(string line, LogLevel level = LogLevel.Info)
         {
-            if (!IsLogLevelEnabled(level)) return;
-            try
-            {
-                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log.txt");
-                string tag = level == LogLevel.Error ? "错误" : (level == LogLevel.Warning ? "警告" : "信息");
-                lock (_logLock)
-                {
-                    File.AppendAllText(logPath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  [" + tag + "] " + line + Environment.NewLine, Encoding.UTF8);
-                }
-            }
-            catch { }
+            Log.Append(line, level);
         }
 
-        private void LogFailureDetails()
+        private void LogFailureDetails(ScanResult result)
         {
-            WriteFailures(_failedFiles, "文件读取失败");
-            WriteFailures(_failedDirs, "目录无法访问");
+            WriteFailures(result.FailedFiles, VideoScanner.LabelFileFailed);
+            WriteFailures(result.FailedDirs, VideoScanner.LabelDirFailed);
 
-            int shown = Math.Min(MaxDetailLines, _skippedDirs.Count);
+            int shown = Math.Min(MaxDetailLines, result.SkippedDirs.Count);
             for (int i = 0; i < shown; i++)
-                AppendLog("超过" + MaxDepth + "层目录已省略: " + _skippedDirs[i], LogLevel.Warning);
-            if (_skippedDirs.Count > MaxDetailLines)
-                AppendLog("…其余省略，共 " + _skippedDirs.Count + " 项", LogLevel.Warning);
+                AppendLog(VideoScanner.DepthSkippedLabel(VideoScanner.MaxDepth) + ": " + result.SkippedDirs[i], LogLevel.Warning);
+            if (result.SkippedDirs.Count > MaxDetailLines)
+                AppendLog("…其余省略，共 " + result.SkippedDirs.Count + " 项", LogLevel.Warning);
         }
 
         private void WriteFailures(List<FailureRecord> list, string label)
@@ -275,129 +296,6 @@ private void AppendLog(string line, LogLevel level = LogLevel.Info)
             }
             if (list.Count > MaxDetailLines)
                 AppendLog("…其余省略，共 " + list.Count + " 项", LogLevel.Warning);
-        }
-
-        private static bool IsLogLevelEnabled(LogLevel level)
-        {
-            try
-            {
-                switch (level)
-                {
-                    case LogLevel.Error: return Properties.Settings.Default.LogErrorEnabled;
-                    case LogLevel.Warning: return Properties.Settings.Default.LogWarningEnabled;
-                    default: return Properties.Settings.Default.LogInfoEnabled;
-                }
-            }
-            catch { return true; }
-        }
-
-private void CollectFoldersRecursive(string path, bool recursive, int depth, List<FolderItem> items, CancellationToken ct)
-        {
-            if (ct.IsCancellationRequested) return;
-            if (depth > MaxDepth)
-            {
-                Interlocked.Increment(ref _depthSkipped);
-                _skippedDirs.Add(path);
-                return;
-            }
-
-            try
-            {
-                string[] files = Directory.GetFiles(path, "*.mp4", SearchOption.TopDirectoryOnly);
-                string[] subDirs = recursive ? SafeGetDirectories(path) : new string[0];
-
-                items.Add(new FolderItem
-                {
-                    FolderPath = path,
-                    Files = files,
-                    SubDirs = subDirs
-                });
-
-                foreach (string dir in subDirs)
-                    CollectFoldersRecursive(dir, recursive, depth + 1, items, ct);
-            }
-            catch (Exception ex)
-            {
-                Interlocked.Increment(ref _dirFail);
-                _failedDirs.Add(new FailureRecord { Path = path, Reason = Mp4Parse.ShortReason(ex) });
-            }
-        }
-
-        private string[] SafeGetDirectories(string path)
-        {
-            string[] dirs = Directory.GetDirectories(path);
-            if (dirs.Length == 0) return dirs;
-            return Array.FindAll(dirs, d => !IsReparsePoint(d));
-        }
-
-        private bool IsReparsePoint(string path)
-        {
-            try
-            {
-                FileAttributes attr = File.GetAttributes(path);
-                return (attr & FileAttributes.ReparsePoint) != 0;
-            }
-            catch { return true; }
-        }
-
-        private double ProcessFolderItems(List<FolderItem> items, CancellationToken ct)
-        {
-            var files = new List<string>();
-            foreach (var it in items) files.AddRange(it.Files);
-
-            int threads = Math.Max(2, Environment.ProcessorCount);
-            Dictionary<string, double> perFile = Mp4Parse.ReadAll(files, out int fail, out List<FailureRecord> failed, threads, ct);
-            if (fail > 0) _failCount += fail;
-            if (failed.Count > 0) _failedFiles.AddRange(failed);
-
-            var totals = new Dictionary<string, double>();
-            var counts = new Dictionary<string, int>();
-
-            for (int i = items.Count - 1; i >= 0; i--)
-            {
-                ct.ThrowIfCancellationRequested();
-                var item = items[i];
-
-                double localTotal = 0;
-                foreach (string file in item.Files)
-                {
-                    if (perFile.TryGetValue(file, out double sec))
-                        localTotal += sec;
-                }
-
-                double subTotal = 0;
-                int subCount = 0;
-                foreach (string subDir in item.SubDirs)
-                {
-                    if (totals.TryGetValue(subDir, out double st))
-                        subTotal += st;
-                    if (counts.TryGetValue(subDir, out int sc))
-                        subCount += sc;
-                }
-
-                double grandTotal = localTotal + subTotal;
-                int grandCount = item.Files.Length + subCount;
-                totals[item.FolderPath] = grandTotal;
-                counts[item.FolderPath] = grandCount;
-
-                _folderResults.Add(new FolderResult
-                {
-                    FolderPath = item.FolderPath,
-                    TotalSeconds = grandTotal,
-                    FileCount = grandCount
-                });
-            }
-
-            return items.Count > 0 ? totals[items[0].FolderPath] : 0;
-        }
-
-private static string FormatTime(double totalSeconds)
-        {
-            long sec = (long)Math.Floor(totalSeconds);
-            long h = sec / 3600;
-            long m = (sec % 3600) / 60;
-            long s = sec % 60;
-            return h + "时" + m + "分" + s + "秒";
         }
 
         private void ResetTextBoxSelection()
@@ -420,6 +318,7 @@ private static string FormatTime(double totalSeconds)
             TextBox_Doc.Text = Properties.Settings.Default.FolderPath;
             ResetTextBoxSelection();
             CbSubfolders.Checked = Properties.Settings.Default.IncludeSubfolders;
+            SetProgressVisible(false);
 
             Rectangle wa = Screen.FromControl(this).WorkingArea;
             this.MaximumSize = new Size(wa.Width, wa.Height);
@@ -575,26 +474,39 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
             Rectangle r = node.Bounds;
             int relX = x - r.Left;
             if (relX <= 0) return 0;
-            int acc = 0;
-            int idx = node.Text.Length;
+
+            string text = node.Text;
+            int len = text.Length;
+            if (len == 0) return 0;
+
+            int[] widths = new int[len];
+            int total = 0;
             using (Graphics g = DetailTree.CreateGraphics())
             {
-                for (int i = 0; i < node.Text.Length; i++)
+                for (int i = 0; i < len; i++)
                 {
-                    int w = TextRenderer.MeasureText(g, node.Text.Substring(0, i + 1), DetailTree.Font, _maxSize, _textFlags).Width
-                         - TextRenderer.MeasureText(g, node.Text.Substring(0, i), DetailTree.Font, _maxSize, _textFlags).Width;
-                    if (relX < acc + w / 2) { idx = i; break; }
-                    acc += w;
+                    int w = TextRenderer.MeasureText(g, text[i].ToString(), DetailTree.Font, _maxSize, _textFlags).Width;
+                    widths[i] = w;
+                    total += w;
                 }
             }
-            if (idx < node.Text.Length && node.Text[idx] == ' ')
+
+            int idx = len;
+            int acc = 0;
+            for (int i = 0; i < len; i++)
             {
-                while (idx > 0 && node.Text[idx - 1] == ' ') idx--;
+                if (relX < acc + widths[i] / 2) { idx = i; break; }
+                acc += widths[i];
             }
-            else if (idx > 0 && node.Text[idx - 1] == ' ' && relX < acc)
+
+            if (idx < text.Length && text[idx] == ' ')
+            {
+                while (idx > 0 && text[idx - 1] == ' ') idx--;
+            }
+            else if (idx > 0 && text[idx - 1] == ' ' && relX < acc)
             {
                 idx--;
-                while (idx > 0 && node.Text[idx - 1] == ' ') idx--;
+                while (idx > 0 && text[idx - 1] == ' ') idx--;
             }
             return idx;
         }
@@ -602,57 +514,98 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         private void DetailTree_DrawNode(object sender, DrawTreeNodeEventArgs e)
         {
             if (e.Node == null) return;
-            Rectangle bounds = e.Bounds;
-            bool selected = (e.State & TreeNodeStates.Selected) != 0;
-            string nodeText = e.Node.Text ?? string.Empty;
-            int textLen = nodeText.Length;
-            int selStart = Math.Max(0, Math.Min(_selStart, textLen));
-            int selEnd = Math.Max(selStart, Math.Min(_selEnd, textLen));
-            bool hasSubSel = _selNode == e.Node && selStart < selEnd;
-
-            TextFormatFlags flags = _textFlags;
-
-            if (hasSubSel)
+            try
             {
-                int rowRight = Math.Max(bounds.Right, DetailTree.ClientSize.Width);
-                e.Graphics.FillRectangle(SystemBrushes.Window, new Rectangle(bounds.Left, bounds.Top, rowRight - bounds.Left, bounds.Height));
-                string text = nodeText;
-                int preW = TextRenderer.MeasureText(e.Graphics, text.Substring(0, selStart), DetailTree.Font, _maxSize, flags).Width;
-                int hlRight = TextRenderer.MeasureText(e.Graphics, text.Substring(0, selEnd), DetailTree.Font, _maxSize, flags).Width;
+                Rectangle bounds = e.Bounds;
+                bool selected = (e.State & TreeNodeStates.Selected) != 0;
+                string nodeText = e.Node.Text ?? string.Empty;
+                int textLen = nodeText.Length;
+                int selStart = Math.Max(0, Math.Min(_selStart, textLen));
+                int selEnd = Math.Max(selStart, Math.Min(_selEnd, textLen));
+                bool hasSubSel = _selNode == e.Node && selStart < selEnd;
 
-                Rectangle pre = new Rectangle(bounds.Left, bounds.Top, preW, bounds.Height);
-                Rectangle hl = new Rectangle(bounds.Left + preW, bounds.Top, Math.Max(1, hlRight - preW), bounds.Height);
-                Rectangle suf = new Rectangle(bounds.Left + hlRight, bounds.Top, Math.Max(1, bounds.Width + 200 - hlRight), bounds.Height);
+                TextFormatFlags flags = _textFlags;
 
-                TextRenderer.DrawText(e.Graphics, text.Substring(0, selStart), DetailTree.Font, pre, SystemColors.WindowText, flags);
-                e.Graphics.FillRectangle(SystemBrushes.Highlight, hl);
-                TextRenderer.DrawText(e.Graphics, text.Substring(selStart, selEnd - selStart), DetailTree.Font, hl, SystemColors.HighlightText, flags);
-                TextRenderer.DrawText(e.Graphics, text.Substring(selEnd), DetailTree.Font, suf, SystemColors.WindowText, flags | TextFormatFlags.NoClipping);
-                return;
+                if (hasSubSel)
+                {
+                    int rowRight = Math.Max(bounds.Right, DetailTree.ClientSize.Width);
+                    e.Graphics.FillRectangle(SystemBrushes.Window, new Rectangle(bounds.Left, bounds.Top, rowRight - bounds.Left, bounds.Height));
+                    string text = nodeText;
+                    int preW = TextRenderer.MeasureText(e.Graphics, text.Substring(0, selStart), DetailTree.Font, _maxSize, flags).Width;
+                    int hlRight = TextRenderer.MeasureText(e.Graphics, text.Substring(0, selEnd), DetailTree.Font, _maxSize, flags).Width;
+
+                    Rectangle pre = new Rectangle(bounds.Left, bounds.Top, preW, bounds.Height);
+                    Rectangle hl = new Rectangle(bounds.Left + preW, bounds.Top, Math.Max(1, hlRight - preW), bounds.Height);
+                    Rectangle suf = new Rectangle(bounds.Left + hlRight, bounds.Top, Math.Max(1, bounds.Width + 200 - hlRight), bounds.Height);
+
+                    TextRenderer.DrawText(e.Graphics, text.Substring(0, selStart), DetailTree.Font, pre, SystemColors.WindowText, flags);
+                    e.Graphics.FillRectangle(SystemBrushes.Highlight, hl);
+                    TextRenderer.DrawText(e.Graphics, text.Substring(selStart, selEnd - selStart), DetailTree.Font, hl, SystemColors.HighlightText, flags);
+                    TextRenderer.DrawText(e.Graphics, text.Substring(selEnd), DetailTree.Font, suf, SystemColors.WindowText, flags | TextFormatFlags.NoClipping);
+                    return;
+                }
+
+                if (selected)
+                {
+                    Rectangle fullRow = new Rectangle(bounds.Left, bounds.Top, Math.Max(1, DetailTree.ClientSize.Width - bounds.Left), bounds.Height);
+                    e.Graphics.FillRectangle(SystemBrushes.Highlight, fullRow);
+                    TextRenderer.DrawText(e.Graphics, nodeText, DetailTree.Font, bounds, SystemColors.HighlightText, flags);
+                }
+                else
+                {
+                    e.Graphics.FillRectangle(SystemBrushes.Window, bounds);
+                    TextRenderer.DrawText(e.Graphics, nodeText, DetailTree.Font, bounds, SystemColors.WindowText, flags);
+                }
             }
-
-            if (selected)
+            catch
             {
-                Rectangle fullRow = new Rectangle(bounds.Left, bounds.Top, Math.Max(1, DetailTree.ClientSize.Width - bounds.Left), bounds.Height);
-                e.Graphics.FillRectangle(SystemBrushes.Highlight, fullRow);
-                TextRenderer.DrawText(e.Graphics, nodeText, DetailTree.Font, bounds, SystemColors.HighlightText, flags);
-            }
-            else
-            {
-                e.Graphics.FillRectangle(SystemBrushes.Window, bounds);
-                TextRenderer.DrawText(e.Graphics, nodeText, DetailTree.Font, bounds, SystemColors.WindowText, flags);
+                try
+                {
+                    Rectangle b = e.Bounds;
+                    e.Graphics.FillRectangle(SystemBrushes.Window,
+                        new Rectangle(b.Left, b.Top, Math.Max(1, DetailTree.ClientSize.Width - b.Left), b.Height));
+                    TextRenderer.DrawText(e.Graphics, e.Node.Text ?? string.Empty, DetailTree.Font, b, SystemColors.WindowText, _textFlags);
+                }
+                catch { }
             }
         }
 
         private void DetailContextMenu_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
             _copyNodeItem.Enabled = (_rightClickNode != null && _rightClickNode == DetailTree.SelectedNode);
+            _exportItem.Enabled = (_lastResult != null);
         }
 
         private void DetailContextMenu_CopyNode_Click(object sender, EventArgs e)
         {
             if (_rightClickNode != null)
                 SafeSetClipboard(_rightClickNode.Text);
+        }
+
+        private void DetailContextMenu_ExportReport_Click(object sender, EventArgs e)
+        {
+            if (_lastResult == null) return;
+            using (var saveDialog = new SaveFileDialog())
+            {
+                saveDialog.Filter = "CSV 文件 (*.csv)|*.csv|HTML 报告 (*.html)|*.html";
+                saveDialog.FileName = "时间统计报表_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".csv";
+                saveDialog.Title = "导出报表";
+                saveDialog.InitialDirectory = AppDomain.CurrentDomain.BaseDirectory;
+                if (saveDialog.ShowDialog() != DialogResult.OK)
+                    return;
+                try
+                {
+                    string format = saveDialog.FilterIndex == 2 ? "html" : "csv";
+                    ReportExporter.Export(saveDialog.FileName, _lastResult, format);
+                    AppendLog("报表已导出: " + saveDialog.FileName);
+                    MessageBox.Show("报表已导出到:\n" + saveDialog.FileName, "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("导出失败: " + ex.Message, LogLevel.Error);
+                    MessageBox.Show("导出失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
         }
 
 private void CopyAllText()
@@ -767,189 +720,27 @@ try
                 return bmp;
             }
         }
-    }
 
-    public static class Mp4Parse
-    {
-        public static Dictionary<string, double> ReadAll(List<string> files, out int fail, int threads)
+        private sealed class UiProgress : IProgress<ScanProgress>
         {
-            return ReadAll(files, out fail, out List<Form1.FailureRecord> ignored, threads, CancellationToken.None);
-        }
+            private readonly Control _owner;
+            private readonly Action<ScanProgress> _update;
 
-        internal static Dictionary<string, double> ReadAll(List<string> files, out int fail, out List<Form1.FailureRecord> failed, int threads, CancellationToken ct = default)
-        {
-            var result = new ConcurrentDictionary<string, double>();
-            var failures = new ConcurrentBag<Form1.FailureRecord>();
-            int f = 0;
-            var opts = new ParallelOptions { MaxDegreeOfParallelism = threads, CancellationToken = ct };
-            Parallel.ForEach(files, opts, path =>
+            public UiProgress(Control owner, Action<ScanProgress> update)
             {
-                ct.ThrowIfCancellationRequested();
-                double d = ParseFile(path, out string reason);
-                if (d >= 0) result[path] = d;
-                else
-                {
-                    Interlocked.Increment(ref f);
-                    failures.Add(new Form1.FailureRecord { Path = path, Reason = reason });
-                }
-            });
-            fail = f;
-            failed = new List<Form1.FailureRecord>(failures);
-            return new Dictionary<string, double>(result);
-        }
-
-        internal static string ShortReason(Exception ex)
-        {
-            string msg = ex.GetType().Name + ": " + ex.Message;
-            if (msg.Length > 200) msg = msg.Substring(0, 200) + "…";
-            return msg;
-        }
-
-        public static double ParseFile(string path)
-        {
-            return ParseFile(path, out _);
-        }
-
-        internal static double ParseFile(string path, out string reason)
-        {
-            reason = "";
-            try
-            {
-                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    long fileLen = fs.Length;
-                    if (fileLen < 16)
-                    {
-                        reason = "文件过小(<16字节)";
-                        return -1;
-                    }
-
-                    const long MinWindow = 4L << 20;
-                    const long MaxWindow = 128L << 20;
-                    long headLen = Math.Min(MinWindow, fileLen);
-
-                    double tail = ScanWindow(fs, fileLen - headLen, headLen, fileLen, out string tailReason);
-                    if (tail >= 0) return tail;
-
-                    reason = tailReason;
-                    if (fileLen > headLen)
-                    {
-                        double head = ScanWindow(fs, 0, headLen, fileLen, out string headReason);
-                        if (head >= 0) return head;
-                        if (!string.IsNullOrEmpty(headReason)) reason = headReason;
-                    }
-
-                    long window = MinWindow * 2;
-                    while (window <= fileLen && window <= MaxWindow)
-                    {
-                        double grown = ScanWindow(fs, fileLen - window, window, fileLen, out string growReason);
-                        if (grown >= 0) return grown;
-                        if (!string.IsNullOrEmpty(growReason)) reason = growReason;
-                        if (window >= fileLen) break;
-                        window *= 2;
-                    }
-
-                    if (string.IsNullOrEmpty(reason)) reason = "未找到有效moov元数据";
-                    return -1;
-                }
+                _owner = owner;
+                _update = update;
             }
-            catch (Exception ex)
-            {
-                reason = ShortReason(ex);
-                return -1;
-            }
-        }
 
-        private static double ScanWindow(FileStream fs, long start, long len, long fileLen, out string reason)
-        {
-            reason = "";
-            try
+            public void Report(ScanProgress value)
             {
-                byte[] buf = new byte[len];
-                fs.Position = start;
-                int read = fs.Read(buf, 0, buf.Length);
-                for (int i = 0; i + 8 <= read; i++)
+                try
                 {
-                    if (buf[i + 4] == 'm' && buf[i + 5] == 'o' && buf[i + 6] == 'o' && buf[i + 7] == 'v')
-                    {
-                        long boxStart = start + i;
-                        long boxSize = BE32(buf, i);
-                        if (boxSize >= 8 && boxStart + boxSize <= fileLen)
-                        {
-                            double d = ParseMoov(fs, boxStart, boxSize);
-                            if (d >= 0) return d;
-                            reason = "moov元数据损坏或不支持";
-                        }
-                    }
+                    if (_owner.IsDisposed || !_owner.IsHandleCreated) return;
+                    _owner.BeginInvoke(new Action(() => _update(value)));
                 }
-                return -1;
+                catch { }
             }
-            catch (Exception ex)
-            {
-                reason = ShortReason(ex);
-                return -1;
-            }
-        }
-
-        private static double ParseMoov(FileStream fs, long boxStart, long boxSize)
-        {
-            try
-            {
-                long toRead = Math.Min(boxSize, 16L << 20);
-                if (toRead < 16) return -1;
-                byte[] moov = new byte[toRead];
-                fs.Position = boxStart;
-                int read = fs.Read(moov, 0, moov.Length);
-                if (read < 16) return -1;
-
-                long p = 8;
-                while (p + 8 <= read)
-                {
-                    long csize = BE32(moov, p);
-                    if (csize < 8) break;
-                    if (moov[p + 4] == 'm' && moov[p + 5] == 'v' && moov[p + 6] == 'h' && moov[p + 7] == 'd')
-                        return ParseMvhd(moov, p, csize);
-                    if (p + csize > read) break;
-                    p += csize;
-                }
-                return -1;
-            }
-            catch { return -1; }
-        }
-
-        private static double ParseMvhd(byte[] b, long off, long size)
-        {
-            try
-            {
-                if (size < 32) return -1;
-                int version = b[off + 8];
-                if (version == 0)
-                {
-                    uint timescale = BE32(b, off + 20);
-                    uint duration = BE32(b, off + 24);
-                    if (timescale == 0) return -1;
-                    return duration / (double)timescale;
-                }
-                else if (version == 1)
-                {
-                    uint timescale = BE32(b, off + 28);
-                    ulong duration = BE64(b, off + 32);
-                    if (timescale == 0) return -1;
-                    return duration / (double)timescale;
-                }
-                return -1;
-            }
-            catch { return -1; }
-        }
-
-        private static uint BE32(byte[] b, long off)
-        {
-            return (uint)((b[off] << 24) | (b[off + 1] << 16) | (b[off + 2] << 8) | b[off + 3]);
-        }
-
-        private static ulong BE64(byte[] b, long off)
-        {
-            return ((ulong)BE32(b, off) << 32) | (ulong)BE32(b, off + 4);
         }
     }
 }
