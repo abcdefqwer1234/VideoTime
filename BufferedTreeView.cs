@@ -75,16 +75,33 @@ namespace VideoTime
                     if (w > 0 && h > 0)
                     {
                         IntPtr memDC = CreateCompatibleDC(hdc);
-                        IntPtr memBmp = CreateCompatibleBitmap(hdc, w + margin, h + margin);
-                        IntPtr oldBmp = SelectObject(memDC, memBmp);
-                        POINT oldOrg;
-                        SetWindowOrgEx(memDC, ps.rcPaint.Left, ps.rcPaint.Top, out oldOrg);
-                        SendMessage(Handle, WM_PRINTCLIENT, memDC, (IntPtr)(PRF_CLIENT | PRF_ERASEBKGND));
-                        SetWindowOrgEx(memDC, oldOrg.X, oldOrg.Y, out oldOrg);
-                        BitBlt(hdc, ps.rcPaint.Left, ps.rcPaint.Top, w, h, memDC, 0, 0, SRCCOPY);
-                        SelectObject(memDC, oldBmp);
-                        DeleteObject(memBmp);
-                        DeleteDC(memDC);
+                        IntPtr memBmp = IntPtr.Zero;
+                        IntPtr oldBmp = IntPtr.Zero;
+                        try
+                        {
+                            if (memDC != IntPtr.Zero)
+                            {
+                                memBmp = CreateCompatibleBitmap(hdc, w + margin, h + margin);
+                                if (memBmp != IntPtr.Zero)
+                                {
+                                    oldBmp = SelectObject(memDC, memBmp);
+                                    POINT oldOrg;
+                                    SetWindowOrgEx(memDC, ps.rcPaint.Left, ps.rcPaint.Top, out oldOrg);
+                                    SendMessage(Handle, WM_PRINTCLIENT, memDC, (IntPtr)(PRF_CLIENT | PRF_ERASEBKGND));
+                                    SetWindowOrgEx(memDC, oldOrg.X, oldOrg.Y, out oldOrg);
+                                    BitBlt(hdc, ps.rcPaint.Left, ps.rcPaint.Top, w, h, memDC, 0, 0, SRCCOPY);
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            if (memDC != IntPtr.Zero)
+                            {
+                                if (oldBmp != IntPtr.Zero) SelectObject(memDC, oldBmp);
+                                DeleteDC(memDC);
+                            }
+                            if (memBmp != IntPtr.Zero) DeleteObject(memBmp);
+                        }
                     }
                     EndPaint(Handle, ref ps);
                 }

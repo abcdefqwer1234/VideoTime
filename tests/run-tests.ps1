@@ -4,11 +4,6 @@ param(
     [string]$ExePath = '',
     [string]$UserConfig = ''
 )
-if (-not $UserConfig) {
-    $cfgDir = Join-Path $env:LOCALAPPDATA 'VideoTime'
-    $found = Get-ChildItem $cfgDir -Filter 'user.config' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($found) { $UserConfig = $found.FullName } else { $UserConfig = '' }
-}
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -18,16 +13,9 @@ $csproj = Join-Path $root 'VideoTime.csproj'
 $exeOut = Join-Path $root 'bin\Debug\VideoTime.exe'
 
 # ---------- 1. 定位 MSBuild ----------
-$vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
-$msbuild = ''
-if (Test-Path $vswhere) {
-    $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' 2>$null | Select-Object -First 1
-}
-if (-not $msbuild -and $env:VSINSTALLDIR) {
-    $cand = Join-Path $env:VSINSTALLDIR 'MSBuild\Current\Bin\MSBuild.exe'
-    if (Test-Path $cand) { $msbuild = $cand }
-}
-if (-not $msbuild) { throw '未找到 MSBuild（请安装 VS 或传 VSINSTALLDIR）' }
+. (Join-Path $testsDir 'lib.ps1')
+$tools = Get-VsBuildTools
+$msbuild = $tools.MsBuild
 Write-Host "[1/4] MSBuild: $msbuild"
 
 # ---------- 2. 编译 Debug ----------
@@ -36,10 +24,8 @@ Write-Host '[2/4] 编译 VideoTime.csproj (Debug/AnyCPU) ...'
 if ($LASTEXITCODE -ne 0) { throw '编译失败' }
 
 # ---------- 3. 编译测试 helper ----------
-$csc = Join-Path (Split-Path $msbuild) 'Roslyn\csc.exe'
-if (-not (Test-Path $csc)) { throw "未找到 csc: $csc" }
-$refAsm = 'C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8'
-if (-not (Test-Path $refAsm)) { $refAsm = 'C:\Program Files\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8' }
+$csc = $tools.Csc
+$refAsm = $tools.RefAsm
 $helperDll = Join-Path $testsDir 'CollectProgress.dll'
 $refArgs = @(
     (Join-Path $refAsm 'mscorlib.dll'),
@@ -73,8 +59,13 @@ $cases = @(
     @{ Name = 'test_robust';    Args = @('-ExePath', $ExePath, '-HelperDir', $testsDir) },
     @{ Name = 'test_cli';       Args = @('-ExePath', $ExePath) },
     @{ Name = 'test_cancel';    Args = @('-ExePath', $ExePath, '-HelperDir', $testsDir) },
-    @{ Name = 'test_settings2'; Args = @('-ExePath', $ExePath, '-UserConfigPath', $UserConfig) }
+    @{ Name = 'test_multiroot'; Args = @('-ExePath', $ExePath) }
 )
+
+# test_settings2 自会定位被测 exe 实际读取的 user.config（对所有找到的配置统一处理后恢复），
+# 仅当用户显式指定 -UserConfig 时才定向到某一个。
+if ($UserConfig) { $cases += @{ Name = 'test_settings2'; Args = @('-ExePath', $ExePath, '-UserConfigPath', $UserConfig) } }
+else { $cases += @{ Name = 'test_settings2'; Args = @('-ExePath', $ExePath) } }
 
 foreach ($c in $cases) {
     $scriptPath = Join-Path $testsDir ($c.Name + '.ps1')

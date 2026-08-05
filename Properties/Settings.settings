@@ -13,5 +13,8 @@
     <Setting Name="LogOutputLevel" Type="VideoTime.LogLevel" Scope="User">
       <Value Profile="(Default)">Info</Value>
     </Setting>
+    <Setting Name="RootPaths" Type="System.String" Scope="User">
+      <Value Profile="(Default)"></Value>
+    </Setting>
   </Settings>
 </SettingsFile>

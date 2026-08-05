@@ -24,7 +24,7 @@ $hdir = Join-Path $env:TEMP ('vt_helper_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $hdir | Out-Null
 Copy-Item $exe (Join-Path $hdir 'VideoTime.exe') -Force
 Copy-Item (Join-Path $HelperDir 'CollectProgress.dll') (Join-Path $hdir 'CollectProgress.dll') -Force
-$asm = [Reflection.Assembly]::LoadFrom((Join-Path $hdir 'VideoTime.exe'))
+[void][Reflection.Assembly]::LoadFrom((Join-Path $hdir 'VideoTime.exe'))
 [void][VideoTime.DurationParser]
 
 function PF([string]$path) { return [VideoTime.DurationParser]::ParseFile($path) }
@@ -52,7 +52,7 @@ function New-ValidAvi([uint32]$micro = 40000, [uint32]$frames = 5000) {
     $aviData = New-Object byte[] 56
     $m = LE32 $micro; for ($i=0;$i -lt 4;$i++){ $aviData[$i] = $m[$i] }
     $f = LE32 $frames; for ($i=0;$i -lt 4;$i++){ $aviData[16+$i] = $f[$i] }
-    $avihChunk = (LE32 56) + [byte[]][char[]]('avih') + $aviData
+    $avihChunk = [byte[]][char[]]('avih') + (LE32 56) + $aviData
     $hdrl = [byte[]][char[]]('LIST') + (LE32 68) + [byte[]][char[]]('hdrl') + $avihChunk
     return [byte[]][char[]]('RIFF') + (LE32 80) + [byte[]][char[]]('AVI ') + $hdrl
 }

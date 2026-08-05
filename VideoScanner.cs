@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace VideoTime
 {
@@ -10,7 +11,6 @@ namespace VideoTime
         public string Phase;
         public int Processed;
         public int Total;
-        public string CurrentFile;
     }
 
     public class ScanResult
@@ -23,6 +23,8 @@ namespace VideoTime
         public int FailCount;
         public int DirFail;
         public int DepthSkipped;
+        public int TotalFileCount;
+        internal HashSet<string> FolderSet;
     }
 
     public class FolderResult
@@ -48,7 +50,6 @@ namespace VideoTime
     public static class VideoScanner
     {
         public const int MaxDepth = 50;
-        private const int MaxDetailLines = 200;
 
         public const string LabelFileFailed = "文件读取失败";
         public const string LabelDirFailed = "目录无法访问";
@@ -56,6 +57,22 @@ namespace VideoTime
         public static string DepthSkippedLabel(int maxDepth)
         {
             return "超过" + maxDepth + "层目录已省略";
+        }
+
+        /// <summary>统一路径分隔符（'/' 归一化为 '\\'），并去掉首尾空白与包围的引号，使两种写法等价、可混合使用。</summary>
+        public static string NormalizePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return path;
+            return path.Trim().Trim('"').Replace('/', '\\');
+        }
+
+        internal static void EnsureFolderSet(ScanResult result)
+        {
+            if (result.FolderSet != null) return;
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in result.FolderResults)
+                set.Add(NormalizePath(r.FolderPath).TrimEnd('\\'));
+            result.FolderSet = set;
         }
 
         public static ScanResult Run(string root, bool recursive, CancellationToken ct, IProgress<ScanProgress> progress = null)
@@ -71,6 +88,8 @@ namespace VideoTime
             var files = new List<string>();
             foreach (var it in items) files.AddRange(it.Files);
 
+            result.TotalFileCount = files.Count;
+
             progress?.Report(new ScanProgress { Phase = "parse", Processed = 0, Total = files.Count });
 
             int processed = 0;
@@ -79,7 +98,7 @@ namespace VideoTime
             {
                 int n = Interlocked.Increment(ref processed);
                 if (throttle.ShouldReport() || n >= files.Count)
-                    progress?.Report(new ScanProgress { Phase = "parse", Processed = n, Total = files.Count, CurrentFile = path });
+                    progress?.Report(new ScanProgress { Phase = "parse", Processed = n, Total = files.Count });
             };
 
             int threads = Math.Max(2, Environment.ProcessorCount);
@@ -92,8 +111,88 @@ namespace VideoTime
             return result;
         }
 
+        public static ScanResult RunMultiple(string[] roots, bool recursive, CancellationToken ct, IProgress<ScanProgress> progress = null)
+        {
+            if (roots == null || roots.Length == 0)
+                return new ScanResult();
+
+            if (roots.Length == 1)
+                return Run(roots[0], recursive, ct, progress);
+
+            var results = new ScanResult[roots.Length];
+            var perRootItems = new List<FolderItem>[roots.Length];
+            int totalFiles = 0;
+
+            for (int i = 0; i < roots.Length; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var items = new List<FolderItem>();
+                var tempResult = new ScanResult();
+                CollectFoldersRecursive(roots[i], recursive, 0, items, tempResult, ct);
+                perRootItems[i] = items;
+                results[i] = tempResult;
+                int count = 0;
+                foreach (var it in items)
+                    count += it.Files.Length;
+                totalFiles += count;
+            }
+
+            ct.ThrowIfCancellationRequested();
+
+            progress?.Report(new ScanProgress { Phase = "parse", Processed = 0, Total = totalFiles });
+
+            int processed = 0;
+            var throttle = new ProgressThrottle();
+            Action<string> fileDone = path =>
+            {
+                int n = Interlocked.Increment(ref processed);
+                if (throttle.ShouldReport() || n >= totalFiles)
+                    progress?.Report(new ScanProgress { Phase = "parse", Processed = n, Total = totalFiles });
+            };
+
+            // 收敛并行度：外层 root 与内层文件读取并发相乘，避免 threads² 过度并发
+            int threads = Math.Max(2, Environment.ProcessorCount);
+            int outerThreads = Math.Max(1, Math.Min(roots.Length, Math.Max(2, threads / 2)));
+            int innerThreads = Math.Max(2, threads / outerThreads);
+
+            Parallel.For(0, roots.Length, new ParallelOptions { MaxDegreeOfParallelism = outerThreads, CancellationToken = ct }, rootIdx =>
+            {
+                ct.ThrowIfCancellationRequested();
+                var items = perRootItems[rootIdx];
+                var tempResult = results[rootIdx];
+
+                var files = new List<string>();
+                foreach (var it in items) files.AddRange(it.Files);
+
+                Dictionary<string, double> perFile = DurationParser.ReadAll(files, out int fail, out List<FailureRecord> failed, innerThreads, ct, fileDone);
+
+                Aggregate(items, perFile, tempResult, ct);
+
+                tempResult.FailCount = fail;
+                tempResult.FailedFiles = failed;
+            });
+
+            var merged = new ScanResult();
+            merged.TotalFileCount = totalFiles;
+            foreach (var r in results)
+            {
+                if (r == null) continue;
+                merged.FolderResults.AddRange(r.FolderResults);
+                merged.FailedFiles.AddRange(r.FailedFiles);
+                merged.FailedDirs.AddRange(r.FailedDirs);
+                merged.SkippedDirs.AddRange(r.SkippedDirs);
+                merged.FailCount += r.FailCount;
+                merged.DirFail += r.DirFail;
+                merged.DepthSkipped += r.DepthSkipped;
+                merged.TotalSeconds += r.TotalSeconds;
+            }
+
+            return merged;
+        }
+
         private static void CollectFoldersRecursive(string path, bool recursive, int depth, List<FolderItem> items, ScanResult result, CancellationToken ct)
         {
+            path = NormalizePath(path);
             if (ct.IsCancellationRequested) return;
             if (depth > MaxDepth)
             {
@@ -196,11 +295,42 @@ namespace VideoTime
 
         public static int DepthOf(ScanResult result, string folderPath)
         {
-            string root = result.FolderResults.Count > 0 ? result.FolderResults[0].FolderPath : "";
-            if (string.IsNullOrEmpty(root) || folderPath.Length <= root.Length) return 0;
-            string rel = folderPath.Substring(root.Length).TrimStart('\\', '/');
-            if (rel.Length == 0) return 0;
-            return rel.Split('\\', '/').Length;
+            if (result == null || result.FolderResults.Count == 0) return 0;
+
+            EnsureFolderSet(result);
+            string path = NormalizePath(folderPath).TrimEnd('\\');
+            string node = path;
+            string ownerRoot = null;
+
+            while (node != null)
+            {
+                if (result.FolderSet.Contains(node))
+                {
+                    string parent = Path.GetDirectoryName(node);
+                    bool parentInSet = parent != null && result.FolderSet.Contains(parent.TrimEnd('\\'));
+                    if (!parentInSet)
+                    {
+                        ownerRoot = node;
+                        break;
+                    }
+                }
+                node = Path.GetDirectoryName(node);
+                if (node != null) node = node.TrimEnd('\\');
+            }
+
+            if (ownerRoot == null)
+            {
+                string root = NormalizePath(result.FolderResults[0].FolderPath).TrimEnd('\\');
+                return RelativeDepth(path, root);
+            }
+            return RelativeDepth(path, ownerRoot);
+        }
+
+        private static int RelativeDepth(string path, string root)
+        {
+            if (path.Length <= root.Length) return 0;
+            string rel = path.Substring(root.Length).TrimStart('\\', '/');
+            return rel.Length == 0 ? 0 : rel.Split('\\', '/').Length;
         }
 
         private class ProgressThrottle

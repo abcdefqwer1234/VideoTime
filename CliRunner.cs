@@ -33,7 +33,7 @@ namespace VideoTime
                 string a = args[i];
                 if (a == "-d" || a == "--folder")
                 {
-                    if (i + 1 < args.Length) folder = args[++i];
+                    if (i + 1 < args.Length) folder = VideoScanner.NormalizePath(args[++i]);
                 }
                 else if (a == "-r" || a == "--recursive")
                 {
@@ -76,7 +76,7 @@ namespace VideoTime
                 ScanResult result = VideoScanner.Run(folder, recursive, System.Threading.CancellationToken.None);
 
                 Console.WriteLine("总时间: " + VideoScanner.Format(result.TotalSeconds));
-                int videoCount = result.FolderResults.Count > 0 ? result.FolderResults[0].FileCount : 0;
+                int videoCount = result.TotalFileCount;
                 Console.WriteLine("已统计视频: " + videoCount + " 个");
                 if (result.FailCount > 0 || result.DirFail > 0 || result.DepthSkipped > 0)
                     Console.WriteLine("缺失: " + result.FailCount + " 个文件读取失败；" + result.DirFail + " 个目录无法访问；" + result.DepthSkipped + " 个超深目录省略");

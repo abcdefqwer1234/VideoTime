@@ -71,5 +71,20 @@ namespace VideoTime.Properties
                 this["LogOutputLevel"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string RootPaths
+        {
+            get
+            {
+                return ((string)(this["RootPaths"]));
+            }
+            set
+            {
+                this["RootPaths"] = value;
+            }
+        }
     }
 }

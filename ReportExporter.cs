@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -23,7 +24,7 @@ namespace VideoTime
                 string label = new string(' ', depth * 2) + r.FolderPath;
                 sb.Append(CsvField(label)).Append(',')
                   .Append(CsvField(VideoScanner.Format(r.TotalSeconds))).Append(',')
-                  .Append(r.TotalSeconds.ToString("0.###")).Append(',')
+                  .Append(r.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)).Append(',')
                   .Append(r.FileCount).AppendLine();
             }
 
@@ -49,8 +50,8 @@ namespace VideoTime
             sb.AppendLine("</style></head><body>");
             sb.AppendLine("<h1>视频时长统计报表</h1>");
             sb.AppendLine("<p>总时间: <b>" + HtmlEscape(VideoScanner.Format(result.TotalSeconds)) + "</b>"
-                        + "（" + result.TotalSeconds.ToString("0.###") + " 秒）"
-                        + "，共 " + (result.FolderResults.Count > 0 ? result.FolderResults[0].FileCount : 0) + " 个视频</p>");
+                        + "（" + result.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) + " 秒）"
+                        + "，共 " + result.TotalFileCount + " 个视频</p>");
             sb.AppendLine("<table><tr><th>文件夹</th><th>总时长</th><th class=\"num\">时长(秒)</th><th class=\"num\">视频数</th></tr>");
             foreach (var r in result.FolderResults)
             {
@@ -58,7 +59,7 @@ namespace VideoTime
                 string indent = new string('&', depth) + "&nbsp;&nbsp;";
                 sb.AppendLine("<tr><td>" + indent + HtmlEscape(r.FolderPath) + "</td>"
                             + "<td>" + HtmlEscape(VideoScanner.Format(r.TotalSeconds)) + "</td>"
-                            + "<td class=\"num\">" + r.TotalSeconds.ToString("0.###") + "</td>"
+                            + "<td class=\"num\">" + r.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) + "</td>"
                             + "<td class=\"num\">" + r.FileCount + "</td></tr>");
             }
             sb.AppendLine("</table>");

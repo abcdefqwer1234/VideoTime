@@ -44,7 +44,7 @@ $mkvPath = Join-Path $tmp 'sample.mkv'; [IO.File]::WriteAllBytes($mkvPath, $mkv)
 $aviData = New-Object byte[] 56
 $micro = LE32 40000; for ($i=0;$i -lt 4;$i++){ $aviData[$i] = $micro[$i] }
 $frames = LE32 5000; for ($i=0;$i -lt 4;$i++){ $aviData[16+$i] = $frames[$i] }
-$avihChunk = (LE32 56) + [byte[]][char[]]('avih') + $aviData
+$avihChunk = [byte[]][char[]]('avih') + (LE32 56) + $aviData
 $hdrl = [byte[]][char[]]('LIST') + (LE32 68) + [byte[]][char[]]('hdrl') + $avihChunk
 $avi = [byte[]][char[]]('RIFF') + (LE32 80) + [byte[]][char[]]('AVI ') + $hdrl
 $aviPath = Join-Path $tmp 'sample.avi'; [IO.File]::WriteAllBytes($aviPath, $avi)
@@ -92,6 +92,14 @@ Assert ($csvText -notmatch 'deep') "CSV 不含子目录 deep（不递归）"
 # CSV 应以 UTF-8 BOM (EF BB BF) 开头
 $bomBytes = [IO.File]::ReadAllBytes($csv)
 Assert (($bomBytes.Length -ge 3) -and ($bomBytes[0] -eq 0xEF) -and ($bomBytes[1] -eq 0xBB) -and ($bomBytes[2] -eq 0xBF)) "CSV 含 UTF-8 BOM"
+
+# ---------- 正斜杠路径等价 ----------
+$csvFwd = Join-Path $tmp 'out_fwd.csv'
+$tmpFwd = $tmp.Replace('\', '/')
+$r = RunCli @('-d', $tmpFwd, '-o', $csvFwd)
+Assert ($r.Code -eq 0) "正斜杠路径退出码 = $($r.Code)（期望 0）"
+$csvFwdText = if (Test-Path $csvFwd) { [IO.File]::ReadAllText($csvFwd) } else { '' }
+Assert ($csvFwdText -match '580') "正斜杠路径 CSV 含总时长 580（分隔符等价）"
 
 # ---------- recursive CSV ----------
 $csv2 = Join-Path $tmp 'out2.csv'

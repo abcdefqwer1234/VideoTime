@@ -4,7 +4,9 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,11 +17,20 @@ namespace VideoTime
     public partial class Form1 : Form
     {
         private const int MaxDetailLines = 200;
-        private const int TreeTop = 176;
-        private const int BottomMargin = 25;
-        private const int ProgressTreeGap = 8;
-        private const int ProgressBarLabelGap = 2;
-        private System.Threading.CancellationTokenSource _scanCts;
+        private const int RowHeight = 28;
+        private const int FilterPanelHeight = 142;
+        private const int ContentLeft = 30;
+        private const int RowTopBase = 28;
+        private const int BrowseWidth = 45;
+        private const int RemoveWidth = 25;
+        private const int ContentGap = 6;
+        private const int ContentTop = 25;
+
+        private static readonly Font RowTextBoxFont = new Font("新宋体", 10.5F);
+        private static readonly Font RowButtonFont = new Font("宋体", 10.5F);
+        private static readonly Font RowRemoveButtonFont = new Font("宋体", 12F, FontStyle.Bold);
+
+        private CancellationTokenSource _scanCts;
         private ScanResult _lastResult;
 
         private TreeNode _selNode;
@@ -35,13 +46,30 @@ namespace VideoTime
         private TreeNode _cachedWidthsNode;
         private int[] _cachedWidths;
 
+        private readonly List<RowControls> _inputRows = new List<RowControls>();
+        private bool _suppressRowEvents;
+        private FilterState _filterState;
+        private bool _filterActive;
+        private string _filterSearchName;
+
+        private class RowControls
+        {
+            public TextBox TextBox;
+            public Button BrowseBtn;
+            public Button RemoveBtn;
+        }
+
         public Form1()
         {
             InitializeComponent();
 
             EnableTreeDoubleBuffering();
 
-            DetailContextMenu = new ContextMenuStrip();
+            this.ClientSizeChanged += (s, e) => AdjustUpperPanelHeight();
+
+            Size chrome = new Size(this.Width - this.ClientSize.Width, this.Height - this.ClientSize.Height);
+            this.MinimumSize = new Size(420 + chrome.Width, 570 + chrome.Height);
+
             var copyItem = new ToolStripMenuItem("复制当前界面文本");
             copyItem.Click += DetailContextMenu_Copy_Click;
             DetailContextMenu.Items.Add(copyItem);
@@ -62,6 +90,35 @@ namespace VideoTime
             DetailTree.MouseDown += DetailTree_MouseDown;
             DetailTree.MouseMove += DetailTree_MouseMove;
             DetailTree.MouseUp += DetailTree_MouseUp;
+
+            _filterSearchName = "";
+
+            txtSearchName.KeyDown += FilterKeyDown;
+            txtDurMin.KeyDown += FilterKeyDown;
+            txtDurMax.KeyDown += FilterKeyDown;
+            txtCountMin.KeyDown += FilterKeyDown;
+            txtCountMax.KeyDown += FilterKeyDown;
+
+            _inputRows.Add(new RowControls
+            {
+                TextBox = TextBox_Doc,
+                BrowseBtn = BtnBrowse,
+                RemoveBtn = BtnRemoveRow1
+            });
+
+            TextBox_Doc.Leave += InputRow_Leave;
+            TextBox_Doc.DragEnter += TextBox_Doc_DragEnter;
+            TextBox_Doc.DragDrop += TextBox_Doc_DragDrop;
+
+            this.MouseDown += (s, e) => ClearFocus();
+            panelFileTab.MouseDown += (s, e) => ClearFocus();
+            panelFilterTab.MouseDown += (s, e) => ClearFocus();
+        }
+
+        private void ClearFocus()
+        {
+            if (ActiveControl is TextBox || ActiveControl is Button || ActiveControl is ComboBox || ActiveControl is CheckBox)
+                ActiveControl = null;
         }
 
         private void EnableTreeDoubleBuffering()
@@ -82,16 +139,310 @@ namespace VideoTime
                 btv.DragActive = value;
         }
 
+        #region Menu Tab Switching
+
+        private void MenuTab_Click(object sender, EventArgs e)
+        {
+            var clicked = sender as ToolStripMenuItem;
+            if (clicked == null) return;
+
+            bool file = clicked == fileMenu;
+            fileMenu.Checked = file;
+            filterMenu.Checked = !file;
+            panelFileTab.Visible = file;
+            panelFilterTab.Visible = !file;
+
+            AdjustUpperPanelHeight();
+        }
+
+        #endregion
+
+        #region Dynamic Input Rows
+
+        private void BtnAddRow_Click(object sender, EventArgs e)
+        {
+            bool hasContent = _inputRows.Any(r => !string.IsNullOrWhiteSpace(r.TextBox.Text));
+            if (!hasContent) return;
+
+            AddInputRow();
+        }
+
+        private void AddInputRow(string text = "")
+        {
+            int y = _inputRows.Count * RowHeight + RowTopBase;
+            var txt = new TextBox
+            {
+                Font = RowTextBoxFont,
+                Location = new Point(ContentLeft, y),
+                Size = new Size(1, 23),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left,
+                Text = text
+            };
+            var btnBrowse = new Button
+            {
+                Font = RowButtonFont,
+                Location = new Point(ContentLeft + 1 + ContentGap, y),
+                Size = new Size(BrowseWidth, 23),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left,
+                Text = "浏览"
+            };
+            var btnRemove = new Button
+            {
+                Font = RowRemoveButtonFont,
+                Location = new Point(ContentLeft + 1 + ContentGap + BrowseWidth, y),
+                Size = new Size(RemoveWidth, 23),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left,
+                Text = "-"
+            };
+
+            btnBrowse.Click += (s, ev) =>
+            {
+                if (folderBrowserDialog1.ShowDialog() == DialogResult.OK)
+                    txt.Text = folderBrowserDialog1.SelectedPath;
+            };
+            btnRemove.Click += BtnRemoveRow_Click;
+            txt.Leave += InputRow_Leave;
+
+            panelFileTab.Controls.Add(txt);
+            panelFileTab.Controls.Add(btnBrowse);
+            panelFileTab.Controls.Add(btnRemove);
+
+            _inputRows.Add(new RowControls
+            {
+                TextBox = txt,
+                BrowseBtn = btnBrowse,
+                RemoveBtn = btnRemove
+            });
+
+            ReindexRows();
+            AdjustUpperPanelHeight();
+        }
+
+        private void BtnRemoveRow_Click(object sender, EventArgs e)
+        {
+            if (_inputRows.Count <= 1) return;
+
+            var btn = sender as Button;
+            if (btn == null) return;
+
+            int idx = _inputRows.FindIndex(r => r.RemoveBtn == btn);
+            if (idx < 0) return;
+
+            var row = _inputRows[idx];
+            panelFileTab.Controls.Remove(row.TextBox);
+            panelFileTab.Controls.Remove(row.BrowseBtn);
+            panelFileTab.Controls.Remove(row.RemoveBtn);
+            row.TextBox.Leave -= InputRow_Leave;
+            _inputRows.RemoveAt(idx);
+
+            ReindexRows();
+            AdjustUpperPanelHeight();
+        }
+
+        private void RemoveBlankRows()
+        {
+            bool changed = false;
+            for (int i = _inputRows.Count - 1; i >= 0; i--)
+            {
+                if (_inputRows.Count <= 1) break;
+                if (string.IsNullOrWhiteSpace(_inputRows[i].TextBox.Text))
+                {
+                    var row = _inputRows[i];
+                    panelFileTab.Controls.Remove(row.TextBox);
+                    panelFileTab.Controls.Remove(row.BrowseBtn);
+                    panelFileTab.Controls.Remove(row.RemoveBtn);
+                    row.TextBox.Leave -= InputRow_Leave;
+                    _inputRows.RemoveAt(i);
+                    changed = true;
+                }
+            }
+            if (changed)
+            {
+                ReindexRows();
+                AdjustUpperPanelHeight();
+            }
+        }
+
+        private void InputRow_Leave(object sender, EventArgs e)
+        {
+            if (_suppressRowEvents) return;
+            var txt = sender as TextBox;
+            if (txt == null) return;
+
+            if (_inputRows.Count <= 1) return;
+
+            if (string.IsNullOrWhiteSpace(txt.Text))
+            {
+                int idx = _inputRows.FindIndex(r => r.TextBox == txt);
+                if (idx >= 0 && idx < _inputRows.Count - 1)
+                {
+                    var row = _inputRows[idx];
+                    panelFileTab.Controls.Remove(row.TextBox);
+                    panelFileTab.Controls.Remove(row.BrowseBtn);
+                    panelFileTab.Controls.Remove(row.RemoveBtn);
+                    row.TextBox.Leave -= InputRow_Leave;
+                    _inputRows.RemoveAt(idx);
+                    ReindexRows();
+                    AdjustUpperPanelHeight();
+                }
+            }
+        }
+
+        private void ReindexRows()
+        {
+            int panelW = panelFileTab.ClientSize.Width;
+            int removeX = panelW - ContentLeft - RemoveWidth;
+            int browseX = removeX - 6 - BrowseWidth;
+            int textW = Math.Max(50, browseX - ContentLeft - 4);
+            for (int i = 0; i < _inputRows.Count; i++)
+            {
+                int y = RowTopBase + i * RowHeight;
+                _inputRows[i].TextBox.Location = new Point(ContentLeft, y);
+                _inputRows[i].TextBox.Width = textW;
+                _inputRows[i].BrowseBtn.Location = new Point(browseX, y);
+                _inputRows[i].RemoveBtn.Location = new Point(removeX, y);
+            }
+        }
+
+        private void LayoutFilterPanel()
+        {
+            int panelW = panelFilterTab.ClientSize.Width;
+            int rightEdge = panelW - ContentLeft;
+
+            txtSearchName.Width = Math.Max(100, rightEdge - 85);
+
+            lblDurUnit.Location = new Point(rightEdge - lblDurUnit.Width, 63);
+
+            int rowRightLimit = lblDurUnit.Left - 6;
+            LayoutRangeRow(txtDurMin, lblDurSep, txtDurMax, rowRightLimit);
+            LayoutRangeRow(txtCountMin, lblCountSep, txtCountMax, rowRightLimit);
+        }
+
+        private void LayoutRangeRow(TextBox minBox, Label sep, TextBox maxBox, int rightLimit)
+        {
+            const int left = 85;
+            const int gap = 6;
+            const int minBoxW = 60;
+
+            int sepW = sep.Width;
+            int usable = rightLimit - left;
+            int freeTotal = usable - (sepW + gap * 2);
+            int boxW = Math.Max(minBoxW, freeTotal / 2);
+
+            int groupW = boxW * 2 + sepW + gap * 2;
+            int groupLeft = left + Math.Max(0, (usable - groupW) / 2);
+            int sepStart = groupLeft + boxW + gap;
+            int maxStart = sepStart + sepW + gap;
+
+            minBox.Location = new Point(left, minBox.Top);
+            minBox.Width = boxW;
+            maxBox.Location = new Point(maxStart, maxBox.Top);
+            maxBox.Width = Math.Min(boxW, Math.Max(1, rightLimit - maxStart));
+            sep.Location = new Point(sepStart, sep.Top);
+        }
+
+        private void AdjustUpperPanelHeight()
+        {
+            int clientW = Math.Max(ClientSize.Width, ContentLeft * 2);
+            int contentW = clientW - ContentLeft * 2;
+
+            int filePanelH = RowTopBase + _inputRows.Count * RowHeight + 4 + 28 + 6;
+            panelFileTab.Width = clientW;
+            panelFileTab.Height = filePanelH;
+            panelFilterTab.Width = clientW;
+            panelFilterTab.Height = FilterPanelHeight;
+
+            ReindexRows();
+            LayoutFilterPanel();
+
+            int lastRowBottom = RowTopBase + _inputRows.Count * RowHeight;
+            Start.Location = new Point(ContentLeft, lastRowBottom + 4);
+            BtnCancel.Location = new Point(ContentLeft + 85, lastRowBottom + 4);
+
+            int panelH = panelFileTab.Visible ? filePanelH : FilterPanelHeight;
+            int showTimeTop = ContentTop + panelH + ContentGap;
+            ShowTime.Location = new Point(ContentLeft, showTimeTop);
+
+            int treeTop = showTimeTop + ShowTime.Height + ContentGap;
+
+            // Always reserve just enough room at the bottom for the progress bar,
+            // so the tree box never moves when the progress bar toggles.
+            int progressH = ProgressBar.Height;
+            int bottomReserve = ContentGap + progressH;
+            int availTreeH = ClientSize.Height - treeTop - ContentGap - bottomReserve;
+            int treeH = Math.Max(0, availTreeH);
+
+            DetailTree.Location = new Point(ContentLeft, treeTop);
+            DetailTree.Size = new Size(contentW, treeH);
+
+            ProgressBar.Location = new Point(ContentLeft, treeTop + treeH + ContentGap);
+            ProgressBar.Width = contentW;
+        }
+
+        #endregion
+
+        #region Scanning
+
         private async void Start_Click(object sender, EventArgs e)
         {
-            string folderPath = TextBox_Doc.Text.Trim().Trim('"');
+            RemoveBlankRows();
 
-            if (!Directory.Exists(folderPath))
+            var validPaths = new List<string>();
+            var invalidPaths = new List<string>();
+            var overlapWarnings = new List<string>();
+
+            foreach (var row in _inputRows)
+            {
+                string path = VideoScanner.NormalizePath(row.TextBox.Text);
+                if (string.IsNullOrWhiteSpace(path)) continue;
+
+                if (!Directory.Exists(path))
+                    invalidPaths.Add(path);
+                else
+                    validPaths.Add(path);
+            }
+
+            if (validPaths.Count == 0 && invalidPaths.Count == 0)
             {
                 ShowTime.Text = "文件夹路径无效，请重新输入。";
-                AppendLog("文件夹路径无效: " + folderPath, LogLevel.Warning);
+                AppendLog("文件夹路径为空", LogLevel.Warning);
                 return;
             }
+
+            if (validPaths.Count == 0 && invalidPaths.Count > 0)
+            {
+                ShowTime.Text = "文件夹路径无效，请重新输入。";
+                AppendLog("文件夹路径无效: " + string.Join(", ", invalidPaths), LogLevel.Warning);
+                return;
+            }
+
+            if (invalidPaths.Count > 0 && validPaths.Count + invalidPaths.Count > 1)
+            {
+                string msg = "以下路径无效:\n" + string.Join("\n", invalidPaths) + "\n是否忽略并继续扫描其余路径？";
+                var result = Dialogs.Show("无效路径", msg, MessageBoxIcon.Warning, ("忽略", DialogResult.Yes), ("取消", DialogResult.No));
+                if (result == DialogResult.No)
+                {
+                    ShowTime.Text = "扫描已取消。";
+                    return;
+                }
+                AppendLog("部分路径无效: " + string.Join(", ", invalidPaths) + "，忽略后继续扫描", LogLevel.Warning);
+            }
+
+            if (validPaths.Count > 1)
+                DetectOverlaps(validPaths, overlapWarnings);
+
+            if (overlapWarnings.Count > 0)
+            {
+                string msg = "检测到以下重叠:\n\n" + string.Join("\n", overlapWarnings) + "\n\n仍继续扫描（允许重复计时）？";
+                var result = Dialogs.Show("重叠提示", msg, MessageBoxIcon.Information, ("是", DialogResult.Yes), ("否", DialogResult.No));
+                if (result == DialogResult.No)
+                {
+                    ShowTime.Text = "扫描已取消。";
+                    return;
+                }
+            }
+
+            ClearFilterInternal();
 
             DetailTree.Nodes.Clear();
             _lastResult = null;
@@ -102,8 +453,8 @@ namespace VideoTime
             BtnCancel.Enabled = true;
             Cursor = Cursors.WaitCursor;
             SetProgressVisible(true);
-            ProgressBar.Style = ProgressBarStyle.Marquee;
-            LblProgress.Text = "正在收集目录…";
+            ProgressBar.SetIndeterminate(true);
+            ProgressBar.ProgressText = "正在收集目录…";
 
             Stopwatch sw = Stopwatch.StartNew();
             string elapsedText = "";
@@ -112,8 +463,16 @@ namespace VideoTime
             var progress = new UiProgress(this, UpdateProgress);
             try
             {
-                ScanResult result = await Task.Run(() => VideoScanner.Run(folderPath, recursive, cts.Token, progress), cts.Token);
-                if (cts.Token.IsCancellationRequested || IsDisposed) return;
+                string[] roots = validPaths.ToArray();
+                ScanResult result = await Task.Run(() => VideoScanner.RunMultiple(roots, recursive, cts.Token, progress), cts.Token);
+                if (cts.Token.IsCancellationRequested || IsDisposed)
+                {
+                    ResetProgressUI();
+                    if (!IsDisposed)
+                        ShowTime.Text = "扫描已取消。";
+                    AppendLog("扫描已取消", LogLevel.Info);
+                    return;
+                }
                 sw.Stop();
                 elapsedText = string.Format("{0:N0} 毫秒", sw.ElapsedMilliseconds);
                 _lastResult = result;
@@ -127,11 +486,14 @@ namespace VideoTime
                 if (result.DepthSkipped > 0)
                     issues.Add(VideoScanner.DepthSkippedLabel(VideoScanner.MaxDepth));
                 if (issues.Count > 0)
-                    AppendLog("扫描完成但存在缺失: " + string.Join("；", issues) + " | " + folderPath + " | 耗时: " + elapsedText, LogLevel.Warning);
+                {
+                    AppendLog("扫描完成但存在缺失: " + string.Join("；", issues) + " | " + string.Join(", ", validPaths) + " | 耗时: " + elapsedText, LogLevel.Warning);
+                    LogFailureDetails(result);
+                }
                 ShowTime.Text = resultText;
-                AppendLog("文件夹: " + folderPath + " | 总时间: " + VideoScanner.Format(result.TotalSeconds) + " | 耗时: " + elapsedText);
+                AppendLog("文件夹: " + string.Join(", ", validPaths) + " | 总时间: " + VideoScanner.Format(result.TotalSeconds) + " | 耗时: " + elapsedText);
 
-                int totalFiles = result.FolderResults.Count > 0 ? result.FolderResults[0].FileCount : 0;
+                int totalFiles = result.TotalFileCount;
                 UpdateProgress(new ScanProgress { Phase = "parse", Processed = totalFiles, Total = totalFiles });
                 BuildTree(result);
                 BtnCancel.Enabled = false;
@@ -141,21 +503,20 @@ namespace VideoTime
 
                 if (issues.Count > 0)
                 {
-                    LogFailureDetails(result);
-                    MessageBox.Show("扫描完成，但存在缺失：\n\n" + string.Join("\n", issues) + "\n\n详细原因已写入日志文件。",
-                        "扫描完成", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Show("扫描完成", "扫描完成，但存在缺失：\n\n" + string.Join("\n", issues) + "\n\n详细原因已写入日志文件。",
+                        MessageBoxIcon.Warning);
                 }
             }
             catch (OperationCanceledException)
             {
                 ShowTime.Text = "扫描已取消。";
-                AppendLog("扫描已取消: " + folderPath, LogLevel.Info);
+                AppendLog("扫描已取消", LogLevel.Info);
                 ResetProgressUI();
             }
             catch (Exception ex)
             {
-                AppendLog("查询异常: " + folderPath + " | " + ex.Message, LogLevel.Error);
-                MessageBox.Show("查询异常: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                AppendLog("查询异常: " + ex.Message, LogLevel.Error);
+                Dialogs.Show("错误", "查询异常: " + ex.Message, MessageBoxIcon.Error);
                 ResetProgressUI();
             }
             finally
@@ -168,42 +529,61 @@ namespace VideoTime
             }
         }
 
+        private void DetectOverlaps(List<string> paths, List<string> warnings)
+        {
+            for (int i = 0; i < paths.Count; i++)
+            {
+                for (int j = i + 1; j < paths.Count; j++)
+                {
+                    string a = VideoScanner.NormalizePath(paths[i]).TrimEnd('\\');
+                    string b = VideoScanner.NormalizePath(paths[j]).TrimEnd('\\');
+
+                    if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
+                    {
+                        warnings.Add("重复路径: " + paths[i]);
+                    }
+                    else if (a.StartsWith(b + "\\", StringComparison.OrdinalIgnoreCase) ||
+                             b.StartsWith(a + "\\", StringComparison.OrdinalIgnoreCase))
+                    {
+                        warnings.Add("嵌套包含: " + paths[i] + " 与 " + paths[j]);
+                    }
+                }
+            }
+        }
+
         private void UpdateProgress(ScanProgress p)
         {
             if (IsDisposed) return;
             if (p.Phase == "collect")
             {
-                ProgressBar.Style = ProgressBarStyle.Marquee;
-                LblProgress.Text = "正在收集目录…";
+                ProgressBar.SetIndeterminate(true);
+                ProgressBar.ProgressText = "正在收集目录…";
                 return;
             }
             if (p.Phase == "parse")
             {
-                ProgressBar.Style = ProgressBarStyle.Blocks;
+                ProgressBar.SetIndeterminate(false);
                 int pct = p.Total > 0 ? (int)(p.Processed * 100L / p.Total) : 0;
                 ProgressBar.Value = Math.Max(0, Math.Min(100, pct));
-                LblProgress.Text = string.Format("正在读取 {0}% ({1}/{2})", pct, p.Processed, p.Total);
+                ProgressBar.ProgressText = string.Format("正在读取 {0}% ({1}/{2})", pct, p.Processed, p.Total);
             }
         }
 
         private void SetProgressVisible(bool visible)
         {
             if (IsDisposed) return;
-            ProgressBar.Location = new Point(ProgressBar.Left, ClientSize.Height - (BottomMargin - ProgressTreeGap) - ProgressBar.Height);
-            LblProgress.Location = new Point(LblProgress.Left, ProgressBar.Top - ProgressBarLabelGap - LblProgress.Height);
-            LblProgress.Visible = visible;
             ProgressBar.Visible = visible;
-            int reserve = visible ? (ProgressBar.Height + ProgressBarLabelGap + LblProgress.Height) : 0;
-            DetailTree.Location = new Point(DetailTree.Left, TreeTop);
-            DetailTree.Height = ClientSize.Height - TreeTop - BottomMargin - reserve;
+            if (!visible)
+                ProgressBar.SetIndeterminate(false);
+            AdjustUpperPanelHeight();
         }
 
         private void ResetProgressUI()
         {
             if (IsDisposed) return;
-            ProgressBar.Style = ProgressBarStyle.Blocks;
+            ProgressBar.SetIndeterminate(false);
             ProgressBar.Value = 0;
-            LblProgress.Text = "";
+            ProgressBar.ProgressText = "";
             SetProgressVisible(false);
         }
 
@@ -216,13 +596,9 @@ namespace VideoTime
             }
         }
 
-        private void BtnSettings_Click(object sender, EventArgs e)
-        {
-            using (var dlg = new SettingsForm())
-            {
-                dlg.ShowDialog(this);
-            }
-        }
+        #endregion
+
+        #region Tree Building
 
         private void BuildTree(ScanResult result)
         {
@@ -238,6 +614,31 @@ namespace VideoTime
             DetailTree.BeginUpdate();
             try
             {
+                VideoScanner.EnsureFolderSet(result);
+                HashSet<string> folderSet = result.FolderSet;
+
+                var roots = new List<FolderResult>();
+                foreach (var r in result.FolderResults)
+                {
+                    string parentPath = Path.GetDirectoryName(r.FolderPath);
+                    string normParent = parentPath == null ? null : VideoScanner.NormalizePath(parentPath).TrimEnd('\\');
+                    if (normParent == null || !folderSet.Contains(normParent))
+                        roots.Add(r);
+                }
+
+                roots.Sort((a, b) => string.Compare(
+                    Path.GetFileName(a.FolderPath) ?? a.FolderPath,
+                    Path.GetFileName(b.FolderPath) ?? b.FolderPath,
+                    StringComparison.OrdinalIgnoreCase));
+
+                var isRootSet = new HashSet<FolderResult>(roots);
+                var nameCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var root in roots)
+                {
+                    string nm = Path.GetFileName(root.FolderPath) ?? root.FolderPath;
+                    nameCount[nm] = nameCount.ContainsKey(nm) ? nameCount[nm] + 1 : 1;
+                }
+
                 var nodeMap = new Dictionary<string, TreeNode>();
                 foreach (var r in result.FolderResults)
                 {
@@ -245,11 +646,14 @@ namespace VideoTime
                     if (string.IsNullOrEmpty(folderName))
                         folderName = r.FolderPath;
 
+                    if (isRootSet.Contains(r) && nameCount.ContainsKey(folderName) && nameCount[folderName] > 1)
+                        folderName = r.FolderPath;
+
                     TreeNode node = new TreeNode($"{folderName}  {VideoScanner.Format(r.TotalSeconds)}  [视频{r.FileCount}]");
                     node.Tag = r.FolderPath;
 
-                    string parentPath = Path.GetDirectoryName(r.FolderPath);
-                    if (parentPath != null && nodeMap.TryGetValue(parentPath, out TreeNode parent))
+                    string parentDir = Path.GetDirectoryName(r.FolderPath);
+                    if (parentDir != null && nodeMap.TryGetValue(parentDir, out TreeNode parent))
                         parent.Nodes.Add(node);
                     else
                         DetailTree.Nodes.Add(node);
@@ -257,7 +661,7 @@ namespace VideoTime
                     nodeMap[r.FolderPath] = node;
                 }
                 foreach (TreeNode node in DetailTree.Nodes)
-                    ExpandToDepth(node, 1);
+                    ExpandToDepth(node, 0);
             }
             finally
             {
@@ -268,10 +672,111 @@ namespace VideoTime
         private void ExpandToDepth(TreeNode node, int currentDepth)
         {
             node.Expand();
-            if (currentDepth >= 3) return;
+            if (currentDepth >= 1) return;
             foreach (TreeNode child in node.Nodes)
                 ExpandToDepth(child, currentDepth + 1);
         }
+
+        #endregion
+
+        #region Filter
+
+        private void BtnFilter_Click(object sender, EventArgs e)
+        {
+            ApplyFilterInternal();
+        }
+
+        private void BtnFilterClear_Click(object sender, EventArgs e)
+        {
+            ClearFilterInternal();
+        }
+
+        private void ApplyFilterInternal()
+        {
+            if (_lastResult == null) return;
+
+            var opt = new FilterOptions
+            {
+                Name = txtSearchName.Text.Trim(),
+                DurationMinHours = ParseDoubleOrNull(txtDurMin.Text),
+                DurationMaxHours = ParseDoubleOrNull(txtDurMax.Text),
+                CountMin = ParseIntOrNull(txtCountMin.Text),
+                CountMax = ParseIntOrNull(txtCountMax.Text)
+            };
+
+            var invalidFields = new List<string>();
+            if (!string.IsNullOrWhiteSpace(txtDurMin.Text) && !opt.DurationMinHours.HasValue) invalidFields.Add("时长下限");
+            if (!string.IsNullOrWhiteSpace(txtDurMax.Text) && !opt.DurationMaxHours.HasValue) invalidFields.Add("时长上限");
+            if (!string.IsNullOrWhiteSpace(txtCountMin.Text) && !opt.CountMin.HasValue) invalidFields.Add("数量下限");
+            if (!string.IsNullOrWhiteSpace(txtCountMax.Text) && !opt.CountMax.HasValue) invalidFields.Add("数量上限");
+            if (invalidFields.Count > 0)
+            {
+                Dialogs.Show("筛选输入无效", "以下筛选条件无法识别，请输入数字：\n\n" + string.Join("\n", invalidFields.Select(f => "· " + f)), MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!opt.IsActive)
+            {
+                ClearFilterInternal();
+                return;
+            }
+
+            _filterActive = true;
+            _filterSearchName = opt.Name;
+
+            _filterState = TreeFilter.ApplyFilter(DetailTree, opt, _filterState);
+
+            double filteredTotal = 0;
+            int filteredCount = 0;
+            TreeFilter.CollectFilteredStats(DetailTree.Nodes, ref filteredTotal, ref filteredCount);
+
+            ShowTime.Text = "过滤合计: " + VideoScanner.Format(filteredTotal) + "  [视频" + filteredCount + "]";
+        }
+
+        private void ClearFilterInternal()
+        {
+            if (_filterState != null)
+            {
+                TreeFilter.ClearFilter(DetailTree, _filterState);
+                _filterState = null;
+            }
+            _filterActive = false;
+            _filterSearchName = "";
+
+            if (_lastResult != null)
+                ShowTime.Text = "总时间: " + VideoScanner.Format(_lastResult.TotalSeconds);
+        }
+
+        private void FilterKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.Handled = true;
+                ApplyFilterInternal();
+            }
+        }
+
+        private static double? ParseDoubleOrNull(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            string t = text.Trim();
+            if (double.TryParse(t, NumberStyles.Float, CultureInfo.CurrentCulture, out double val)) return val;
+            if (t.IndexOf(',') >= 0 && double.TryParse(t.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out val)) return val;
+            return null;
+        }
+
+        private static int? ParseIntOrNull(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            string t = text.Trim();
+            if (int.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out int val)) return val;
+            if (t.IndexOf(',') >= 0 && int.TryParse(t.Replace(",", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out val)) return val;
+            return null;
+        }
+
+        #endregion
+
+        #region Existing functionality
 
         private void AppendLog(string line, LogLevel level = LogLevel.Info)
         {
@@ -302,10 +807,12 @@ namespace VideoTime
                 AppendLog("…其余省略，共 " + list.Count + " 项", LogLevel.Warning);
         }
 
-        private void ResetTextBoxSelection()
+        private void BtnSettings_Click(object sender, EventArgs e)
         {
-            TextBox_Doc.SelectionStart = 0;
-            TextBox_Doc.SelectionLength = 0;
+            using (var dlg = new SettingsForm())
+            {
+                dlg.ShowDialog(this);
+            }
         }
 
         private void BtnBrowse_Click(object sender, EventArgs e)
@@ -317,22 +824,69 @@ namespace VideoTime
             }
         }
 
+        private void ResetTextBoxSelection()
+        {
+            TextBox_Doc.SelectionStart = 0;
+            TextBox_Doc.SelectionLength = 0;
+        }
+
         private void Form1_Load(object sender, EventArgs e)
         {
-            TextBox_Doc.Text = Properties.Settings.Default.FolderPath;
-            ResetTextBoxSelection();
+            string saved = Properties.Settings.Default.RootPaths;
+            if (!string.IsNullOrWhiteSpace(saved))
+            {
+                string[] paths = saved.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                _suppressRowEvents = true;
+
+                while (_inputRows.Count > 1)
+                {
+                    var row = _inputRows[_inputRows.Count - 1];
+                    panelFileTab.Controls.Remove(row.TextBox);
+                    panelFileTab.Controls.Remove(row.BrowseBtn);
+                    panelFileTab.Controls.Remove(row.RemoveBtn);
+                    row.TextBox.Leave -= InputRow_Leave;
+                    _inputRows.RemoveAt(_inputRows.Count - 1);
+                }
+
+                if (paths.Length > 0)
+                    _inputRows[0].TextBox.Text = paths[0];
+
+                for (int i = 1; i < paths.Length; i++)
+                    AddInputRow(paths[i]);
+
+                _suppressRowEvents = false;
+            }
+            else
+            {
+                string oldPath = Properties.Settings.Default.FolderPath;
+                if (!string.IsNullOrWhiteSpace(oldPath))
+                    TextBox_Doc.Text = oldPath;
+            }
+
             CbSubfolders.Checked = Properties.Settings.Default.IncludeSubfolders;
+            ResetTextBoxSelection();
             SetProgressVisible(false);
+            AdjustUpperPanelHeight();
 
             Rectangle wa = Screen.FromControl(this).WorkingArea;
             this.MaximumSize = new Size(wa.Width, wa.Height);
             this.Size = new Size(Math.Min(this.Width, wa.Width), Math.Min(this.Height, wa.Height));
         }
 
-private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             if (_scanCts != null)
                 _scanCts.Cancel();
+
+            var paths = new List<string>();
+            foreach (var row in _inputRows.ToArray())
+            {
+                string t = row.TextBox.Text.Trim();
+                if (!string.IsNullOrWhiteSpace(t))
+                    paths.Add(t);
+            }
+
+            Properties.Settings.Default.RootPaths = string.Join(";", paths);
             Properties.Settings.Default.FolderPath = TextBox_Doc.Text;
             Properties.Settings.Default.IncludeSubfolders = CbSubfolders.Checked;
             Properties.Settings.Default.Save();
@@ -340,7 +894,7 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
 
         private void Form1_ResizeEnd(object sender, EventArgs e)
         {
-            ResetTextBoxSelection();
+            AdjustUpperPanelHeight();
             TextBox_Doc.ScrollToCaret();
         }
 
@@ -379,8 +933,15 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             if (_selNode != null && _selStart < _selEnd)
             {
-                SafeSetClipboard(_selNode.Text.Substring(_selStart, _selEnd - _selStart));
-                return;
+                string text = _selNode.Text ?? string.Empty;
+                int len = text.Length;
+                int s = Math.Max(0, Math.Min(_selStart, len));
+                int e = Math.Max(s, Math.Min(_selEnd, len));
+                if (s < e)
+                {
+                    SafeSetClipboard(text.Substring(s, e - s));
+                    return;
+                }
             }
             if (DetailTree.SelectedNode != null)
             {
@@ -472,7 +1033,7 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
             }
         }
 
-        private static TextFormatFlags _textFlags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
+        private static readonly TextFormatFlags _textFlags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
         private static readonly Size _maxSize = new Size(int.MaxValue, int.MaxValue);
 
         private int CharIndexAt(TreeNode node, int x)
@@ -547,7 +1108,9 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
 
                     Rectangle pre = new Rectangle(bounds.Left, bounds.Top, preW, bounds.Height);
                     Rectangle hl = new Rectangle(bounds.Left + preW, bounds.Top, Math.Max(1, hlRight - preW), bounds.Height);
-                    Rectangle suf = new Rectangle(bounds.Left + hlRight, bounds.Top, Math.Max(1, bounds.Width + 200 - hlRight), bounds.Height);
+                    int sufX = bounds.Left + hlRight;
+                    int sufRight = Math.Max(sufX, DetailTree.ClientSize.Width);
+                    Rectangle suf = new Rectangle(sufX, bounds.Top, Math.Max(1, sufRight - sufX), bounds.Height);
 
                     TextRenderer.DrawText(e.Graphics, text.Substring(0, selStart), DetailTree.Font, pre, SystemColors.WindowText, flags);
                     e.Graphics.FillRectangle(SystemBrushes.Highlight, hl);
@@ -561,6 +1124,10 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
                     Rectangle fullRow = new Rectangle(bounds.Left, bounds.Top, Math.Max(1, DetailTree.ClientSize.Width - bounds.Left), bounds.Height);
                     e.Graphics.FillRectangle(SystemBrushes.Highlight, fullRow);
                     TextRenderer.DrawText(e.Graphics, nodeText, DetailTree.Font, bounds, SystemColors.HighlightText, flags);
+                }
+                else if (_filterActive && !string.IsNullOrEmpty(_filterSearchName))
+                {
+                    DrawFilterHighlight(e, bounds, nodeText, flags);
                 }
                 else
                 {
@@ -578,6 +1145,50 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
                     TextRenderer.DrawText(e.Graphics, e.Node.Text ?? string.Empty, DetailTree.Font, b, SystemColors.WindowText, _textFlags);
                 }
                 catch { }
+            }
+        }
+
+        private void DrawFilterHighlight(DrawTreeNodeEventArgs e, Rectangle bounds, string nodeText, TextFormatFlags flags)
+        {
+            string name = TreeFilter.ExtractName(nodeText);
+            List<int> positions = TreeFilter.FindSubstringPositions(name, _filterSearchName);
+            if (positions.Count == 0)
+            {
+                e.Graphics.FillRectangle(SystemBrushes.Window, bounds);
+                TextRenderer.DrawText(e.Graphics, nodeText, DetailTree.Font, bounds, SystemColors.WindowText, flags);
+                return;
+            }
+
+            int rowRight = Math.Max(bounds.Right, DetailTree.ClientSize.Width);
+            e.Graphics.FillRectangle(SystemBrushes.Window, new Rectangle(bounds.Left, bounds.Top, rowRight - bounds.Left, bounds.Height));
+
+            int cursor = 0;
+            foreach (int pos in positions)
+            {
+                int matchLen = _filterSearchName.Length;
+                if (pos > cursor)
+                    DrawTextSegment(e.Graphics, nodeText, cursor, pos - cursor, bounds, false, flags);
+                DrawTextSegment(e.Graphics, nodeText, pos, matchLen, bounds, true, flags);
+                cursor = pos + matchLen;
+            }
+            if (cursor < nodeText.Length)
+                DrawTextSegment(e.Graphics, nodeText, cursor, nodeText.Length - cursor, bounds, false, flags);
+        }
+
+        private void DrawTextSegment(Graphics g, string text, int start, int len, Rectangle bounds, bool highlight, TextFormatFlags flags)
+        {
+            int preW = TextRenderer.MeasureText(g, text.Substring(0, start), DetailTree.Font, _maxSize, flags).Width;
+            int segW = TextRenderer.MeasureText(g, text.Substring(0, start + len), DetailTree.Font, _maxSize, flags).Width - preW;
+            Rectangle seg = new Rectangle(bounds.Left + preW, bounds.Top, Math.Max(1, segW), bounds.Height);
+
+            if (highlight)
+            {
+                g.FillRectangle(SystemBrushes.Highlight, seg);
+                TextRenderer.DrawText(g, text.Substring(start, len), DetailTree.Font, seg, SystemColors.HighlightText, flags);
+            }
+            else
+            {
+                TextRenderer.DrawText(g, text.Substring(start, len), DetailTree.Font, seg, SystemColors.WindowText, flags);
             }
         }
 
@@ -609,17 +1220,17 @@ private void Form1_FormClosing(object sender, FormClosingEventArgs e)
                     string format = saveDialog.FilterIndex == 2 ? "html" : "csv";
                     ReportExporter.Export(saveDialog.FileName, _lastResult, format);
                     AppendLog("报表已导出: " + saveDialog.FileName);
-                    MessageBox.Show("报表已导出到:\n" + saveDialog.FileName, "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Dialogs.Show("完成", "报表已导出到:\n" + saveDialog.FileName, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
                 {
                     AppendLog("导出失败: " + ex.Message, LogLevel.Error);
-                    MessageBox.Show("导出失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Dialogs.Show("错误", "导出失败: " + ex.Message, MessageBoxIcon.Error);
                 }
             }
         }
 
-private void CopyAllText()
+        private void CopyAllText()
         {
             string text = GetVisibleTreeText();
             if (text.Length > 0)
@@ -655,11 +1266,11 @@ private void CopyAllText()
 
         private void SaveTreeToImage()
         {
-string text = GetVisibleTreeText();
+            string text = GetVisibleTreeText();
             if (text.Length == 0)
             {
                 AppendLog("保存图片失败: 无可保存的文本内容", LogLevel.Warning);
-                MessageBox.Show("没有可保存的文本内容。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Dialogs.Show("提示", "没有可保存的文本内容。", MessageBoxIcon.Information);
                 return;
             }
 
@@ -672,51 +1283,70 @@ string text = GetVisibleTreeText();
                     return;
 
                 ImageFormat format = saveDialog.FilterIndex == 2 ? ImageFormat.Bmp : ImageFormat.Png;
-try
+                try
                 {
                     using (var img = RenderTextToImage(text))
                         img.Save(saveDialog.FileName, format);
                     AppendLog("图片已保存: " + saveDialog.FileName);
-                    MessageBox.Show("图片已保存到:\n" + saveDialog.FileName, "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Dialogs.Show("完成", "图片已保存到:\n" + saveDialog.FileName, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
                 {
                     AppendLog("保存失败: " + ex.Message, LogLevel.Error);
-                    MessageBox.Show("保存失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Dialogs.Show("错误", "保存失败: " + ex.Message, MessageBoxIcon.Error);
                 }
             }
         }
 
         private static Image RenderTextToImage(string text)
         {
+            const float fontSize = 16f;
+            const int pad = 20;
+            const int lineSpacing = 28;
+            const float maxScale = 3f;
+            const int maxLines = 30000;
+            const long maxPixels = 24_000_000L;
+
             string[] lines = text.Replace("\r\n", "\n").Split('\n');
             if (lines.Length > 0 && lines[lines.Length - 1].Length == 0)
                 Array.Resize(ref lines, lines.Length - 1);
 
-            const float fontSize = 16f;
-            const int pad = 20;
-            const int lineSpacing = 28;
-            const float scale = 3f;
+            if (lines.Length > maxLines)
+            {
+                int omitted = lines.Length - maxLines;
+                string[] kept = new string[maxLines + 1];
+                Array.Copy(lines, kept, maxLines);
+                kept[maxLines] = "……（共 " + lines.Length + " 行，已省略 " + omitted + " 行，请改用“复制当前界面文本”）";
+                lines = kept;
+            }
+
+            // 以 scale=1 测量自然宽高，再按像素预算确定实际缩放，避免大结果时位图内存无界
+            float width1 = 0;
+            using (Font measureFont = new Font("新宋体", fontSize, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (Bitmap measureBmp = new Bitmap(1, 1))
+            using (Graphics g = Graphics.FromImage(measureBmp))
+            {
+                foreach (string line in lines)
+                {
+                    float w = g.MeasureString(line, measureFont).Width;
+                    if (w > width1) width1 = w;
+                }
+            }
+
+            float h1 = lines.Length * lineSpacing;
+            float scale = maxScale;
+            float budgetScale = (float)Math.Sqrt((double)maxPixels / (double)(Math.Max(width1, 1f) * Math.Max(h1, 1f)));
+            if (budgetScale < scale) scale = budgetScale;
+
             int scaledPad = (int)(pad * scale);
             int scaledSpacing = (int)(lineSpacing * scale);
+            int width = Math.Max(1, (int)Math.Ceiling(width1 * scale) + scaledPad * 2);
+            int height = Math.Max(1, (int)Math.Ceiling(h1 * scale) + scaledPad * 2);
+
             using (Font font = new Font("新宋体", fontSize * scale, FontStyle.Regular, GraphicsUnit.Pixel))
             {
-                float maxWidth = 0;
-                using (Bitmap measureBmp = new Bitmap(1, 1))
-                using (Graphics g = Graphics.FromImage(measureBmp))
-                {
-                    foreach (string line in lines)
-                    {
-                        float w = g.MeasureString(line, font).Width;
-                        if (w > maxWidth) maxWidth = w;
-                    }
-                }
-
-                int width = (int)Math.Ceiling(maxWidth) + scaledPad * 2;
-                int height = lines.Length * scaledSpacing + scaledPad * 2;
-
                 Bitmap bmp = new Bitmap(width, height);
-                bmp.SetResolution(288f, 288f);
+                bmp.SetResolution(96f * scale, 96f * scale);
                 using (Graphics g = Graphics.FromImage(bmp))
                 {
                     g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -753,5 +1383,7 @@ try
                 catch { }
             }
         }
+
+        #endregion
     }
 }

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ExePath = (Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) 'bin\Debug\VideoTime.exe'),
     [string]$HelperDir = (Split-Path -Parent $MyInvocation.MyCommand.Path)
 )
@@ -28,7 +28,7 @@ $hdir = Join-Path $env:TEMP ('vt_helper_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $hdir | Out-Null
 Copy-Item $exe (Join-Path $hdir 'VideoTime.exe') -Force
 Copy-Item (Join-Path $HelperDir 'CollectProgress.dll') (Join-Path $hdir 'CollectProgress.dll') -Force
-$asm = [Reflection.Assembly]::LoadFrom((Join-Path $hdir 'VideoTime.exe'))
+[void][Reflection.Assembly]::LoadFrom((Join-Path $hdir 'VideoTime.exe'))
 [void][VideoTime.DurationParser]
 
 # progress helper: records progress lines + cancels on a chosen phase

@@ -32,7 +32,7 @@ $hdir = Join-Path $env:TEMP ('vt_helper_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $hdir | Out-Null
 Copy-Item $exe (Join-Path $hdir 'VideoTime.exe') -Force
 Copy-Item (Join-Path $HelperDir 'CollectProgress.dll') (Join-Path $hdir 'CollectProgress.dll') -Force
-$asm = [Reflection.Assembly]::LoadFrom((Join-Path $hdir 'VideoTime.exe'))
+[void][Reflection.Assembly]::LoadFrom((Join-Path $hdir 'VideoTime.exe'))
 [void][VideoTime.DurationParser]
 
 $tmp = Join-Path $env:TEMP ('vt_parser_' + [guid]::NewGuid().ToString('N'))
@@ -59,11 +59,11 @@ $mkv = $ebmlHeader + $segment
 $mkvPath = Join-Path $tmp 'sample.mkv'
 [IO.File]::WriteAllBytes($mkvPath, $mkv)
 
-# ---------- synthetic AVI: micro=40000 frames=5000 => 200s ----------
+# ---------- synthetic AVI (标准 RIFF 布局): micro=40000 frames=5000 => 200s ----------
 $aviData = New-Object byte[] 56
 $micro = LE32 40000; for ($i=0;$i -lt 4;$i++){ $aviData[$i] = $micro[$i] }
 $frames = LE32 5000; for ($i=0;$i -lt 4;$i++){ $aviData[16+$i] = $frames[$i] }
-$avihChunk = (LE32 56) + [byte[]][char[]]('avih') + $aviData
+$avihChunk = [byte[]][char[]]('avih') + (LE32 56) + $aviData
 $hdrl = [byte[]][char[]]('LIST') + (LE32 68) + [byte[]][char[]]('hdrl') + $avihChunk
 $avi = [byte[]][char[]]('RIFF') + (LE32 80) + [byte[]][char[]]('AVI ') + $hdrl
 $aviPath = Join-Path $tmp 'sample.avi'
@@ -74,9 +74,8 @@ $asfGuid = [byte[]](0x30,0x26,0xB2,0x75,0x8E,0x66,0xCF,0x11,0xA6,0xD9,0x00,0xAA,
 $filePropsGuid = [byte[]](0xA1,0xDC,0xAB,0x8C,0x47,0xA9,0xCF,0x11,0x8E,0xE4,0x00,0xC0,0x0C,0x20,0x53,0x65)
 $fileProps = $filePropsGuid + (LE64 92) + [byte[]](New-Object byte[] 16) + (LE64 0) + (LE64 0) + (LE64 0) + (LE64 2000000000) + (LE64 0) + (LE64 0) + [byte[]](0,0,0,0)
 $headerObj = $asfGuid + (LE64 (16+8+4+1+1+$fileProps.Length)) + (LE32 1) + [byte[]](1,2) + $fileProps
-$wmv = $headerObj
 $wmvPath = Join-Path $tmp 'sample.wmv'
-[IO.File]::WriteAllBytes($wmvPath, $wmv)
+[IO.File]::WriteAllBytes($wmvPath, $headerObj)
 
 # ---------- failure & non-video ----------
 $badPath = Join-Path $tmp 'broken.mp4'
@@ -101,7 +100,6 @@ $sub = Join-Path $tmp 'mix'
 New-Item -ItemType Directory -Path $sub | Out-Null
 Copy-Item $mp4Path $sub; Copy-Item $mkvPath $sub; Copy-Item $aviPath $sub; Copy-Item $wmvPath $sub
 
-$spType = $asm.GetType('VideoTime.ScanProgress')
 $helperAsm = [Reflection.Assembly]::LoadFrom((Join-Path $hdir 'CollectProgress.dll'))
 $cpType = $helperAsm.GetType('CollectProgress')
 $prog = [Activator]::CreateInstance($cpType)
@@ -114,8 +112,12 @@ Assert ($result.FailCount -eq 0)             "失败文件 = $($result.FailCount
 $items = @($prog.Lines)
 $parsePhase = @($items | Where-Object { $_ -like 'parse:*' })
 Assert ($parsePhase.Count -gt 0)             "进度事件含解析阶段（$($parsePhase.Count) 条）"
-$lastParts = $parsePhase[-1].Split(':')[1].Split('/')
-Assert ($lastParts[0] -eq '4' -and $lastParts[1] -eq '4') "最后一条进度 4/4（$($parsePhase[-1])）"
+if ($parsePhase.Count -gt 0) {
+    $lastParts = $parsePhase[-1].Split(':')[1].Split('/')
+    Assert ($lastParts[0] -eq '4' -and $lastParts[1] -eq '4') "最后一条进度 4/4（$($parsePhase[-1])）"
+} else {
+    Assert $false "最后一条进度 4/4（无 parse 进度记录）"
+}
 $collectPhase = @($items | Where-Object { $_ -like 'collect:*' })
 Assert ($collectPhase.Count -eq 1)           "进度事件含收集阶段（$($collectPhase.Count) 条）"
 

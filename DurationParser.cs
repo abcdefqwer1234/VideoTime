@@ -14,6 +14,11 @@ namespace VideoTime
             ".mp4", ".mov", ".m4v", ".3gp", ".mkv", ".webm", ".avi", ".wmv", ".asf"
         };
 
+        private static readonly HashSet<string> Mp4FamilyExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".mp4", ".mov", ".m4v", ".3gp"
+        };
+
         public static bool IsVideoFile(string path)
         {
             return Extensions.Contains(Path.GetExtension(path));
@@ -31,11 +36,6 @@ namespace VideoTime
             {
                 return new string[0];
             }
-        }
-
-        public static Dictionary<string, double> ReadAll(List<string> files, out int fail, int threads)
-        {
-            return ReadAll(files, out fail, out List<FailureRecord> ignored, threads, CancellationToken.None, null);
         }
 
         internal static Dictionary<string, double> ReadAll(List<string> files, out int fail, out List<FailureRecord> failed, int threads, CancellationToken ct = default, Action<string> fileDone = null)
@@ -127,10 +127,7 @@ namespace VideoTime
 
         private static bool IsMp4Ext(string ext)
         {
-            return ext.Equals(".mp4", StringComparison.OrdinalIgnoreCase)
-                || ext.Equals(".mov", StringComparison.OrdinalIgnoreCase)
-                || ext.Equals(".m4v", StringComparison.OrdinalIgnoreCase)
-                || ext.Equals(".3gp", StringComparison.OrdinalIgnoreCase);
+            return Mp4FamilyExts.Contains(ext);
         }
 
         // ---------- MP4 / MOV family ----------
@@ -474,8 +471,9 @@ namespace VideoTime
                 {
                     if (buf[i] == 'a' && buf[i + 1] == 'v' && buf[i + 2] == 'i' && buf[i + 3] == 'h')
                     {
-                        uint micro = LE32(buf, i + 4);
-                        uint frames = LE32(buf, i + 4 + 16);
+                        // 标准 RIFF 块: ['avih'][size][AVIMAINHEADER]，dwMicroSecPerFrame 在 +8，dwTotalFrames 在 +24
+                        uint micro = LE32(buf, i + 8);
+                        uint frames = LE32(buf, i + 24);
                         if (micro == 0 || frames == 0) { reason = "avi头无有效时长"; return -1; }
                         return frames * (double)micro / 1e6;
                     }

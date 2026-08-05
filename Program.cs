@@ -14,12 +14,8 @@ namespace VideoTime
         {
             if (args.Length > 0)
             {
-                int exitCode;
-                if (CliRunner.TryRun(args, out exitCode))
-                {
-                    Environment.Exit(exitCode);
-                    return;
-                }
+                CliRunner.TryRun(args, out int exitCode);
+                Environment.Exit(exitCode);
             }
 
             Application.EnableVisualStyles();
@@ -51,8 +47,7 @@ namespace VideoTime
             catch { }
             try
             {
-                MessageBox.Show(message + "：\n" + (ex == null ? "" : ex.Message),
-                    "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Show("错误", message + "：\n" + (ex == null ? "" : ex.Message), MessageBoxIcon.Error);
             }
             catch { }
         }
