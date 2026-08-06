@@ -6,10 +6,7 @@ $ErrorActionPreference = 'Stop'
 $script:Pass = 0
 $script:Fail = 0
 
-function Assert([bool]$cond, [string]$msg) {
-    if ($cond) { $script:Pass++; Write-Host "  PASS  $msg" -ForegroundColor Green }
-    else { $script:Fail++; Write-Host "  FAIL  $msg" -ForegroundColor Red }
-}
+. (Join-Path $PSScriptRoot 'lib.ps1')
 
 if (-not (Test-Path $ExePath)) { Write-Error "找不到 exe: $ExePath"; exit 1 }
 $exe = (Resolve-Path $ExePath).Path
@@ -105,14 +102,10 @@ function RunCli([string[]]$argsList) {
     return $proc.ExitCode
 }
 
-function BE32([long]$v) { $b = [BitConverter]::GetBytes([uint32]$v); [Array]::Reverse($b); return [byte[]]$b }
 $logPath = Join-Path (Split-Path $exe) 'log.txt'
 $sampleDir = Join-Path $env:TEMP ('vt_cfgdir_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $sampleDir | Out-Null
-$ftyp = [byte[]](BE32 20) + [byte[]][char[]]('ftyp') + [byte[]][char[]]('isom') + [byte[]](0,0,0,0) + [byte[]][char[]]('isom')
-$mvhd = [byte[]](BE32 108) + [byte[]][char[]]('mvhd') + [byte[]](0,0,0,0) + [byte[]](0,0,0,0) + [byte[]](0,0,0,0) + (BE32 1000) + (BE32 60000) + [byte[]](New-Object byte[] 80)
-$moov = [byte[]](BE32 (8 + $mvhd.Length)) + [byte[]][char[]]('moov') + $mvhd
-[IO.File]::WriteAllBytes((Join-Path $sampleDir 'x.mp4'), ($ftyp + $moov))
+[IO.File]::WriteAllBytes((Join-Path $sampleDir 'x.mp4'), (New-ValidMp4))
 
 try {
     $prevLen = if (Test-Path $logPath) { (Get-Item $logPath).Length } else { 0 }
@@ -143,6 +136,16 @@ try {
     Start-Sleep -Milliseconds 300
     $lenErr = (Get-Item $logPath).Length
     Assert ($lenErr -eq $lenInfo) "日志级别 Error 时 Info/Warning 级被过滤（$lenInfo -> $lenErr）"
+
+    # Error 级下，输出失败（非法 -o 路径，目录不存在）仍应写 [错误] 日志
+    $badOut = Join-Path (Join-Path $env:TEMP ('vt_nope_' + [guid]::NewGuid().ToString('N'))) 'out.csv'
+    $codeBad = RunCli @('-d', $sampleDir, '-o', $badOut)
+    Start-Sleep -Milliseconds 300
+    $lenErr2 = (Get-Item $logPath).Length
+    Assert ($codeBad -eq 1) "非法 -o 路径退出码 = $($codeBad)（期望 1）"
+    Assert ($lenErr2 -gt $lenErr) "日志级别 Error 时 CLI 失败也写错误日志（$lenErr -> $lenErr2）"
+    $logTextE = [IO.File]::ReadAllText($logPath)
+    Assert ($logTextE -match '\[错误\]') "log.txt 含 [错误] 标签"
 }
 finally {
     # 还原所有被管理的 user.config

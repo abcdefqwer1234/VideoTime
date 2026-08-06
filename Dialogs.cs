@@ -6,7 +6,7 @@ namespace VideoTime
 {
     public static class Dialogs
     {
-        public static DialogResult Show(string title, string message, MessageBoxIcon icon, params (string Text, DialogResult Result)[] buttons)
+        public static DialogResult Show(string title, string message, MessageBoxIcon icon, Form owner = null, params (string Text, DialogResult Result)[] buttons)
         {
             if (buttons == null || buttons.Length == 0)
                 buttons = new[] { ("确定", DialogResult.OK) };
@@ -35,7 +35,8 @@ namespace VideoTime
                 int groupW = buttonW * buttons.Length + gap * (buttons.Length - 1);
                 int buttonY = padding + labelHeight + verticalGap;
                 int contentH = buttonY + buttonH + 14;
-                int screenH = Screen.PrimaryScreen != null ? Screen.PrimaryScreen.WorkingArea.Height - 40 : 700;
+                Screen screen = owner != null ? Screen.FromControl(owner) : Screen.PrimaryScreen;
+                int screenH = screen != null ? screen.WorkingArea.Height - 40 : 700;
                 int maxDialogHeight = Math.Max(200, Math.Min(700, screenH));
                 bool scroll = contentH > maxDialogHeight;
                 int dialogHeight = scroll ? maxDialogHeight : contentH;
@@ -102,7 +103,7 @@ namespace VideoTime
 
                     dlg.AcceptButton = buttonControls[0];
                     dlg.CancelButton = buttonControls[buttonControls.Length - 1];
-                    return dlg.ShowDialog();
+                    return owner != null ? dlg.ShowDialog(owner) : dlg.ShowDialog();
                 }
             }
         }

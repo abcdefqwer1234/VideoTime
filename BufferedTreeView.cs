@@ -54,6 +54,12 @@ namespace VideoTime
 
         public bool DragActive { get; set; }
 
+        public BufferedTreeView()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+            UpdateStyles();
+        }
+
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);

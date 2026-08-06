@@ -6,17 +6,7 @@ $ErrorActionPreference = 'Stop'
 $script:Pass = 0
 $script:Fail = 0
 
-function Assert([bool]$cond, [string]$msg) {
-    if ($cond) { $script:Pass++; Write-Host "  PASS  $msg" -ForegroundColor Green }
-    else { $script:Fail++; Write-Host "  FAIL  $msg" -ForegroundColor Red }
-}
-function Approx([double]$a, [double]$b, [double]$tol) { [Math]::Abs($a - $b) -le $tol }
-
-function BE32([long]$v) { $b = [BitConverter]::GetBytes([uint32]$v); [Array]::Reverse($b); return [byte[]]$b }
-function LE32([long]$v) { return [byte[]]([BitConverter]::GetBytes([uint32]$v)) }
-function BE64([long]$v) { $b = [BitConverter]::GetBytes([int64]$v); [Array]::Reverse($b); return [byte[]]$b }
-function LE64([long]$v) { return [byte[]]([BitConverter]::GetBytes([int64]$v)) }
-function BE64Double([double]$v) { $b = [BitConverter]::GetBytes([double]$v); [Array]::Reverse($b); return [byte[]]$b }
+. (Join-Path $PSScriptRoot 'lib.ps1')
 
 if (-not (Test-Path $ExePath)) { Write-Error "exe not found: $ExePath"; exit 1 }
 $exe = (Resolve-Path $ExePath).Path
@@ -24,49 +14,12 @@ $hdir = Join-Path $env:TEMP ('vt_helper_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $hdir | Out-Null
 Copy-Item $exe (Join-Path $hdir 'VideoTime.exe') -Force
 Copy-Item (Join-Path $HelperDir 'CollectProgress.dll') (Join-Path $hdir 'CollectProgress.dll') -Force
-[void][Reflection.Assembly]::LoadFrom((Join-Path $hdir 'VideoTime.exe'))
+[void][Reflection.Assembly]::Load([IO.File]::ReadAllBytes((Join-Path $hdir 'VideoTime.exe')))
 [void][VideoTime.DurationParser]
-
-function PF([string]$path) { return [VideoTime.DurationParser]::ParseFile($path) }
 
 $tmp = Join-Path $env:TEMP ('vt_robust_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null
 Write-Host "test dir: $tmp"
-
-function New-ValidMp4 {
-    $ftyp = [byte[]](BE32 20) + [byte[]][char[]]('ftyp') + [byte[]][char[]]('isom') + [byte[]](0,0,0,0) + [byte[]][char[]]('isom')
-    $mvhd = [byte[]](BE32 108) + [byte[]][char[]]('mvhd') + [byte[]](0,0,0,0) + [byte[]](0,0,0,0) + [byte[]](0,0,0,0) + (BE32 1000) + (BE32 60000) + [byte[]](New-Object byte[] 80)
-    $moov = [byte[]](BE32 (8 + $mvhd.Length)) + [byte[]][char[]]('moov') + $mvhd
-    return $ftyp + $moov
-}
-function New-ValidMkv([int]$durMs = 120000) {
-    $docType = [byte[]](0x42,0x82,0x88) + [byte[]][char[]]('matroska')
-    $ebmlHeader = [byte[]](0x1A,0x45,0xDF,0xA3,0x8B) + $docType
-    $timecode = [byte[]](0x2A,0xD7,0xB1,0x84) + (BE32 1000000)
-    $duration = [byte[]](0x44,0x89,0x88) + (BE64Double ([double]$durMs))
-    $info = [byte[]](0x15,0x49,0xA9,0x66,0x93) + $timecode + $duration
-    $segment = [byte[]](0x18,0x53,0x80,0x67,0x01,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF) + $info
-    return $ebmlHeader + $segment
-}
-function New-ValidAvi([uint32]$micro = 40000, [uint32]$frames = 5000) {
-    $aviData = New-Object byte[] 56
-    $m = LE32 $micro; for ($i=0;$i -lt 4;$i++){ $aviData[$i] = $m[$i] }
-    $f = LE32 $frames; for ($i=0;$i -lt 4;$i++){ $aviData[16+$i] = $f[$i] }
-    $avihChunk = [byte[]][char[]]('avih') + (LE32 56) + $aviData
-    $hdrl = [byte[]][char[]]('LIST') + (LE32 68) + [byte[]][char[]]('hdrl') + $avihChunk
-    return [byte[]][char[]]('RIFF') + (LE32 80) + [byte[]][char[]]('AVI ') + $hdrl
-}
-function New-ValidWmv([int64]$play100ns = 2000000000, [int64]$preroll100ns = 0) {
-    $asfGuid = [byte[]](0x30,0x26,0xB2,0x75,0x8E,0x66,0xCF,0x11,0xA6,0xD9,0x00,0xAA,0x00,0x62,0xCE,0x6C)
-    $filePropsGuid = [byte[]](0xA1,0xDC,0xAB,0x8C,0x47,0xA9,0xCF,0x11,0x8E,0xE4,0x00,0xC0,0x0C,0x20,0x53,0x65)
-    $fileProps = $filePropsGuid + (LE64 92) + [byte[]](New-Object byte[] 16) + (LE64 0) + (LE64 0) + (LE64 0) + (LE64 $play100ns) + (LE64 0) + (LE64 $preroll100ns) + [byte[]](0,0,0,0)
-    return $asfGuid + (LE64 (16+8+4+1+1+$fileProps.Length)) + (LE32 1) + [byte[]](1,2) + $fileProps
-}
-function Write-File([string]$name, [byte[]]$bytes) {
-    $p = Join-Path $tmp $name
-    [IO.File]::WriteAllBytes($p, $bytes)
-    return $p
-}
 
 # ============ 1. MP4 boundary ============
 Write-Host '== MP4 boundary =='
@@ -86,7 +39,7 @@ $d3 = PF $p3; Assert ($d3 -lt 0) "timescale=0 fail ($d3)"
 
 $moovHuge = [byte[]](BE32 0x7FFFFFF0) + [byte[]][char[]]('moov') + [byte[]][char[]]('mvhd')
 $p4 = Write-File 'hugebox.mp4' ($ftyp + $moovHuge)
-$d4 = PF $p4; Assert ($d4 -lt 0) "moov boxSize huge fail, no crash ($d4)"
+$d4 = PF $p4; Assert ($d4 -eq -1) "moov boxSize 超过文件长度 -> -1 不崩溃 ($d4)"
 
 $pad = New-Object byte[] 204800
 (New-Object Random 42).NextBytes($pad)
@@ -136,6 +89,16 @@ $mvhd0d = [byte[]](BE32 108) + [byte[]][char[]]('mvhd') + [byte[]](0,0,0,0) + [b
 $moov0d = [byte[]](BE32 (8 + $mvhd0d.Length)) + [byte[]][char[]]('moov') + $mvhd0d
 $p0d = Write-File 'dur0.mp4' ($ftyp + $moov0d)
 $d0d = PF $p0d; Assert ($d0d -eq 0) "mvhd duration=0 valid -> 0s ($d0d)"
+
+# mvhd v2（64位 timescale/duration）：当前实现仅支持 v0/v1，应安全返回 -1
+$mvhdV2 = [byte[]](BE32 112) + [byte[]][char[]]('mvhd') + [byte[]](2,0,0,0) + (BE64 0) + (BE64 0) + (BE32 1000) + (BE64 90000) + [byte[]](New-Object byte[] 72)
+$moovV2 = [byte[]](BE32 (8 + $mvhdV2.Length)) + [byte[]][char[]]('moov') + $mvhdV2
+$pV2 = Write-File 'v2.mp4' ($ftyp + $moovV2)
+$dV2 = PF $pV2; Assert ($dV2 -eq -1) "mvhd v2(64位) 当前不支持 -> -1 ($dV2)"
+
+# 仅 ftyp 盒、无 moov：应失败
+$pFt = Write-File 'ftyponly.mp4' $ftyp
+$dFt = PF $pFt; Assert ($dFt -eq -1) "仅 ftyp 无 moov -> -1 ($dFt)"
 
 # ============ 2. MKV boundary ============
 Write-Host '== MKV boundary =='
@@ -191,10 +154,13 @@ $dNoAvih = PF $pNoAvih; Assert ($dNoAvih -lt 0) "AVI no avih fail ($dNoAvih)"
 $p13 = Write-File 'ok.wmv' (New-ValidWmv)
 Assert (Approx (PF $p13) 200 0.001) "WMV = 200s"
 
+$asfGuid = [byte[]](0x30,0x26,0xB2,0x75,0x8E,0x66,0xCF,0x11,0xA6,0xD9,0x00,0xAA,0x00,0x62,0xCE,0x6C)
+$filePropsGuid = [byte[]](0xA1,0xDC,0xAB,0x8C,0x47,0xA9,0xCF,0x11,0x8E,0xE4,0x00,0xC0,0x0C,0x20,0x53,0x65)
+
 $big = New-ValidWmv
 $bigHeader = [byte[]]($big[0..15]) + (LE64 0x7FFFFFFF0) + [byte[]]($big[24..($big.Length-1)])
 $p14 = Write-File 'hugehdr.wmv' $bigHeader
-$d14 = PF $p14; Assert ($d14 -ge -1) "ASF huge headerSize no crash ($d14)"
+$d14 = PF $p14; Assert (Approx $d14 200 0.001) "ASF huge headerSize 被钳制后仍解析出 200s ($d14)"
 
 # preroll >= play：diff<=0，应返回"无有效播放时长"失败
 $p14b = Write-File 'preroll.wmv' (New-ValidWmv 2000000000 2000000000)
@@ -287,9 +253,9 @@ Assert ($r.DirFail -eq 1) "nonexistent dir -> DirFail=1 (defensive, no throw)"
 $rpBase = Join-Path $tmp 'juncycle'
 New-Item -ItemType Directory -Path $rpBase -Force | Out-Null
 Copy-Item $p1 (Join-Path $rpBase 'a.mp4')
-cmd /c mklink /J (Join-Path $rpBase 'self') $rpBase 2>$null
+& $env:COMSPEC /c mklink /J (Join-Path $rpBase 'self') $rpBase 2>$null
 $r = [VideoTime.VideoScanner]::Run($rpBase, $true, [Threading.CancellationToken]::None)
-Assert ($r.TotalSeconds -ge 0) "junction cycle terminates (no hang)"
+Assert (Approx $r.TotalSeconds 60 0.001) "junction 不递归，只统计 a.mp4 = 60s"
 Assert ($r.FailCount -eq 0) "junction cycle no crash"
 
 # ============ 6. Report escaping ============
@@ -302,6 +268,27 @@ $csv = [VideoTime.ReportExporter]::BuildCsv($r)
 $html = [VideoTime.ReportExporter]::BuildHtml($r)
 Assert ($csv.Contains('we&ird,dir",')) "CSV quotes comma-containing path"
 Assert ($html.Contains('we&amp;ird,dir')) 'HTML escapes & comma'
+
+# 空结果：构建导出不得崩溃，仍含表头与"无缺失记录"
+$emptyRes = New-Object VideoTime.ScanResult
+$csvE = [VideoTime.ReportExporter]::BuildCsv($emptyRes)
+$htmlE = [VideoTime.ReportExporter]::BuildHtml($emptyRes)
+Assert ($csvE -match '文件夹,总时长') "空结果 CSV 含表头"
+Assert ($csvE -match '无缺失记录') "空结果 CSV 含'无缺失记录'"
+Assert ($htmlE -match '视频时长统计报表') "空结果 HTML 含标题"
+
+# CsvField/HtmlEscape 转义：引号按 RFC4180 双写、CRLF 保留、HTML 转义 < > & "
+# （用失败原因字段承载特殊字符：失败原因不走 DepthOf，可任意含非法路径字符）
+$qRes = New-Object VideoTime.ScanResult
+$qRes.FailedFiles.Add((New-Object VideoTime.FailureRecord))
+$qRes.FailedFiles[0].Path = 'f.mp4'
+$qRes.FailedFiles[0].Reason = 'dq"path' + "`r`n" + 'second'
+$csvQ = [VideoTime.ReportExporter]::BuildCsv($qRes)
+Assert ($csvQ.Contains('dq""path')) "CSV 引号转义为双引号（RFC4180）"
+Assert ($csvQ.Contains("`r`n" + 'second')) "CSV 字段内 CRLF 保留"
+$qRes.FailedFiles[0].Reason = 'a<b>&"c'
+$htmlQ = [VideoTime.ReportExporter]::BuildHtml($qRes)
+Assert ($htmlQ.Contains('a&lt;b&gt;&amp;&quot;c')) 'HTML 转义 < > & "'
 
 # ============ 7. Unicode path ============
 Write-Host '== Unicode path =='
@@ -326,7 +313,6 @@ Assert ($csv.Contains('带,逗号目录",')) "CSV quotes unicode+comma folder"
 Write-Host '== Fuzz =='
 $rng = New-Object Random 12345
 $exts = @('.mp4','.mov','.m4v','.3gp','.mkv','.webm','.avi','.wmv','.asf','.txt')
-$fuzzOk = $true
 for ($i = 0; $i -lt 12; $i++) {
     $size = $rng.Next(0, 4097)
     $data = New-Object byte[] $size
@@ -334,9 +320,23 @@ for ($i = 0; $i -lt 12; $i++) {
     $ext = $exts[$rng.Next(0, $exts.Length)]
     $fp = Write-File ('fuzz' + $i + $ext) $data
     $d = PF $fp
-    if ($d -lt -1) { $fuzzOk = $false; Write-Host "    [note] fuzz$i$ext returned $d" }
+    Assert ($d -eq -1) "fuzz$i$ext 随机字节解析 = -1（不崩溃）($d)"
 }
-Assert ($fuzzOk) "fuzz: 12 random files return -1..n (no crash/hang)"
+
+Write-Host '== 结构变异 fuzz =='
+$mutRng = New-Object Random 777
+$validFiles = @($p1, $p7, $p11, $p13)
+for ($i = 0; $i -lt 24; $i++) {
+    $src = [IO.File]::ReadAllBytes($validFiles[$i % $validFiles.Length])
+    $mutCount = $mutRng.Next(1, 9)
+    for ($j = 0; $j -lt $mutCount; $j++) {
+        $idx = $mutRng.Next(0, $src.Length)
+        $src[$idx] = $mutRng.Next(0, 256)
+    }
+    $fp = Write-File ('mut' + $i + '.bin') $src
+    $d = PF $fp
+    Assert ($d -ge -1) "变异样本 mut$i：返回值在契约范围 [-1,∞)（$d）"
+}
 
 Write-Host ''
 Write-Host "Passed $script:Pass, Failed $script:Fail"

@@ -123,6 +123,8 @@ namespace VideoTime
             var perRootItems = new List<FolderItem>[roots.Length];
             int totalFiles = 0;
 
+            progress?.Report(new ScanProgress { Phase = "collect", Processed = 0, Total = roots.Length });
+
             for (int i = 0; i < roots.Length; i++)
             {
                 ct.ThrowIfCancellationRequested();
@@ -135,6 +137,7 @@ namespace VideoTime
                 foreach (var it in items)
                     count += it.Files.Length;
                 totalFiles += count;
+                progress?.Report(new ScanProgress { Phase = "collect", Processed = i + 1, Total = roots.Length });
             }
 
             ct.ThrowIfCancellationRequested();

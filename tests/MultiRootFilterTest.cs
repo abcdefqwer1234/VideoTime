@@ -260,6 +260,68 @@ public class MultiRootFilterTest
         Assert(TreeFilter.ExtractName("folder  1时0分0秒  [视频5]") == "folder", "Extract name from formatted text");
         Assert(TreeFilter.ExtractName("a  0时0分0秒  [视频0]") == "a", "Extract single char name");
         Assert(TreeFilter.ExtractName("") == "", "Empty string returns empty");
+        Assert(TreeFilter.ExtractName("plain folder") == "plain folder", "ExtractName 无标记返回完整文本");
+        Assert(TreeFilter.ExtractName("  双空格开头") == "  双空格开头", "ExtractName 无标记保留首尾空白");
+        Assert(TreeFilter.ExtractSeconds("no marker") == 0, "ExtractSeconds 无标记 -> 0");
+        Assert(TreeFilter.ExtractSeconds("") == 0, "ExtractSeconds 空串 -> 0");
+        Assert(TreeFilter.ExtractSeconds("x  1时0分0秒") == 0, "ExtractSeconds 缺 [视频] 标记 -> 0");
+    }
+
+    public static void TestFindSubstringPositions()
+    {
+        Console.WriteLine("== TreeFilter.FindSubstringPositions ==");
+        var p = TreeFilter.FindSubstringPositions("abcABCabc", "abc");
+        Assert(p.Count == 3 && p[0] == 0 && p[1] == 3 && p[2] == 6, "大小写不敏感，3 处命中 (0,3,6)，got " + string.Join(",", p));
+        Assert(TreeFilter.FindSubstringPositions("abc", "xyz").Count == 0, "无匹配 -> 空");
+        Assert(TreeFilter.FindSubstringPositions("", "a").Count == 0, "空文本 -> 空");
+        Assert(TreeFilter.FindSubstringPositions("abc", "").Count == 0, "空子串 -> 空");
+        Assert(TreeFilter.FindSubstringPositions(null, "a").Count == 0, "null 文本 -> 空");
+    }
+
+    public static void TestCollectFilteredStats()
+    {
+        Console.WriteLine("== TreeFilter.CollectFilteredStats ==");
+        var tv = new System.Windows.Forms.TreeView();
+        tv.Nodes.Add("L1  1时0分0秒  [视频1]");
+        tv.Nodes.Add("L2  0时30分0秒  [视频2]");
+        var branch = new System.Windows.Forms.TreeNode("B  0时0分0秒  [视频0]");
+        branch.Nodes.Add("L3  2时0分0秒  [视频5]");
+        tv.Nodes.Add(branch);
+        double sec = 0; int cnt = 0;
+        TreeFilter.CollectFilteredStats(tv.Nodes, ref sec, ref cnt);
+        Assert(Math.Abs(sec - 12600) < 0.01, "CollectFilteredStats 累计 3600+1800+7200 = 12600s，got " + sec);
+        Assert(cnt == 8, "CollectFilteredStats 累计 1+2+5 = 8，got " + cnt);
+    }
+
+    public static void TestRunMultipleEmptyAndSingle()
+    {
+        Console.WriteLine("== VideoScanner.RunMultiple 空/单根 ==");
+        var empty0 = VideoScanner.RunMultiple(new string[0], true, CancellationToken.None);
+        Assert(empty0 != null && empty0.FolderResults.Count == 0 && empty0.TotalSeconds == 0, "RunMultiple(空数组) 返回空结果不崩溃");
+        var emptyN = VideoScanner.RunMultiple(null, true, CancellationToken.None);
+        Assert(emptyN != null && emptyN.FolderResults.Count == 0, "RunMultiple(null) 返回空结果不崩溃");
+
+        string tempRoot = Path.Combine(Path.GetTempPath(), "vt_test_single_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        try
+        {
+            Directory.CreateDirectory(tempRoot);
+            CreateDummyMp4(Path.Combine(tempRoot, "v.mp4"));
+            var single = VideoScanner.RunMultiple(new[] { tempRoot }, true, CancellationToken.None);
+            Assert(single != null && single.FolderResults.Count == 1, "RunMultiple(单根) = 1 个文件夹，got " + (single != null ? single.FolderResults.Count.ToString() : "null"));
+            Assert(single != null && single.FolderResults[0].FolderPath == tempRoot, "单根结果路径与输入一致");
+        }
+        finally
+        {
+            try { Directory.Delete(tempRoot, true); } catch { }
+        }
+    }
+
+    public static void TestDepthOfEmpty()
+    {
+        Console.WriteLine("== VideoScanner.DepthOf 空结果 ==");
+        var empty = new ScanResult();
+        Assert(VideoScanner.DepthOf(empty, @"C:\whatever") == 0, "DepthOf(空结果) = 0");
+        Assert(VideoScanner.DepthOf(null, @"C:\whatever") == 0, "DepthOf(null) = 0");
     }
 
     public static void TestExtractNameRobust()
@@ -320,8 +382,8 @@ public class MultiRootFilterTest
             Assert(result != null, "RunMultiple returns non-null");
             Assert(result.FolderResults.Count == 3, "RunMultiple found 3 folders (RootA, RootA/SubFolder, RootB), got " + result.FolderResults.Count);
 
-            // Dummy MP4s have no valid duration, so TotalSeconds may be 0
-            Assert(result.TotalSeconds >= 0, "TotalSeconds >= 0, got " + result.TotalSeconds);
+            // Dummy MP4s have no valid duration, so TotalSeconds must be exactly 0
+            Assert(result.TotalSeconds == 0, "TotalSeconds = 0 (Dummy MP4 无有效时长), got " + result.TotalSeconds);
 
             // Each folder's FileCount includes subfolder files (Aggregate behavior)
             // RootA has 3 (2 direct + 1 in SubFolder), RootA/SubFolder has 1, RootB has 1
@@ -514,6 +576,7 @@ public class MultiRootFilterTest
         Assert(sw.ElapsedMilliseconds < 20000, "可见树 6200 节点 过滤+还原耗时 " + sw.ElapsedMilliseconds + " ms (< 20000)");
     }
 
+    [STAThread]
     public static void Main(string[] args)
     {
         Console.WriteLine("=== MultiRoot + Filter Tests ===");
@@ -523,11 +586,15 @@ public class MultiRootFilterTest
         TestExtractNameRobust();
         TestExtractSeconds();
         TestExtractCount();
+        TestFindSubstringPositions();
+        TestCollectFilteredStats();
         TestNormalizePath();
         TestRunMultiple();
         TestRunMultipleOverlap();
         TestRunMultipleSeparators();
+        TestRunMultipleEmptyAndSingle();
         TestDepthOfNested();
+        TestDepthOfEmpty();
         TestFilterPerformanceOnVisibleTree();
         Console.WriteLine();
         Console.WriteLine("Total: Passed " + Passed + ", Failed " + Failed);

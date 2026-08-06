@@ -126,7 +126,11 @@ internal static class ProbeCancelRace
                     DisarmCancel();
                     Check(true, "正常取消: Start 重新启用", "enabled=" + _startBtn.Enabled);
                     Check(!_progressBar.Visible, "正常取消: 进度条已隐藏", "visible=" + _progressBar.Visible);
-                    Check(_showTime.Text == "扫描已取消。", "正常取消: ShowTime=扫描已取消。", "got=" + _showTime.Text);
+                    // 容忍竞态：取消定时若晚于扫描完成，则以成功收尾（严格的取消/成功判定由 4/5 竞态扫描负责）
+                    bool canceled = _showTime.Text == "扫描已取消。";
+                    bool reachedTerminal = canceled || _showTime.Text.StartsWith("总时间");
+                    Check(reachedTerminal, "正常取消: 到达终态（取消或完成）", "got=" + _showTime.Text);
+                    if (!canceled) Console.WriteLine("WARN: 取消定时晚于扫描完成，本次按完成处理");
                     _phase = 4;
                 }
                 else if (_sw.ElapsedMilliseconds > 60000)

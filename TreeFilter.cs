@@ -20,12 +20,16 @@ namespace VideoTime
 
     public class FilterState
     {
-        public Dictionary<TreeNode, bool> ExpandState { get; } = new Dictionary<TreeNode, bool>();
-
         public Dictionary<TreeNode, string> OriginalTexts { get; } = new Dictionary<TreeNode, string>();
 
         private readonly List<RemovedNode> _removed = new List<RemovedNode>();
         public IReadOnlyList<RemovedNode> Removed => _removed;
+
+        /// <summary>过滤过程中被展开的枝干（原为折叠态）。清除时仅需反向折叠这些节点。</summary>
+        public List<TreeNode> ExpandedByFilter { get; } = new List<TreeNode>();
+
+        /// <summary>被移除子树根节点移除前的展开状态，清除后按原状恢复。</summary>
+        public Dictionary<TreeNode, bool> RemovedExpanded { get; } = new Dictionary<TreeNode, bool>();
 
         public class RemovedNode
         {
@@ -98,7 +102,6 @@ namespace VideoTime
                 ClearFilter(tree, state);
 
             state = new FilterState();
-            SaveExpandState(tree.Nodes, state.ExpandState);
             SaveOriginalTexts(tree.Nodes, state.OriginalTexts);
 
             HashSet<TreeNode> visible = new HashSet<TreeNode>();
@@ -119,6 +122,7 @@ namespace VideoTime
                     TreeNode parent = n.Parent;
                     int index = parent != null ? parent.Nodes.IndexOf(n) : tree.Nodes.IndexOf(n);
                     state.AddRemoved(n, parent, index);
+                    state.RemovedExpanded[n] = n.IsExpanded;
                 }
                 foreach (TreeNode n in toRemove)
                 {
@@ -127,7 +131,7 @@ namespace VideoTime
                 }
 
                 foreach (TreeNode root in tree.Nodes)
-                    ExpandMatchingAncestors(root);
+                    ExpandMatchingAncestors(root, state.ExpandedByFilter);
             }
             finally
             {
@@ -150,14 +154,24 @@ namespace VideoTime
                     TreeNodeCollection coll = r.Parent != null ? r.Parent.Nodes : tree.Nodes;
                     int idx = Math.Min(r.Index, coll.Count);
                     coll.Insert(idx, r.Node);
+                    // 还原被移除子树根节点原有的展开状态
+                    if (state.RemovedExpanded.TryGetValue(r.Node, out bool wasExpanded) && wasExpanded)
+                        r.Node.Expand();
                 }
                 state.ClearRemoved();
+                state.RemovedExpanded.Clear();
 
                 RestoreOriginalTexts(tree.Nodes, state.OriginalTexts);
                 state.OriginalTexts.Clear();
 
-                RestoreExpandState(tree.Nodes, state.ExpandState);
-                state.ExpandState.Clear();
+                // 仅反向折叠过滤过程中新展开的枝干，不再遍历整棵树的展开状态
+                for (int i = 0; i < state.ExpandedByFilter.Count; i++)
+                {
+                    TreeNode n = state.ExpandedByFilter[i];
+                    if (n.IsExpanded)
+                        n.Collapse();
+                }
+                state.ExpandedByFilter.Clear();
             }
             finally
             {
@@ -256,7 +270,10 @@ namespace VideoTime
                 SumVisibleLeaves(node, visible, ref sumSeconds, ref sumCount);
 
                 string name = ExtractName(node.Text);
-                node.Text = name + "  " + VideoScanner.Format(sumSeconds) + "  [视频" + sumCount + "]";
+                string newText = name + "  " + VideoScanner.Format(sumSeconds) + "  [视频" + sumCount + "]";
+                // 值未变化时跳过，避免对原生 TreeView 发送无谓的 TVM_SETITEM（大数据量下开销巨大）
+                if (node.Text != newText)
+                    node.Text = newText;
             }
         }
 
@@ -291,23 +308,18 @@ namespace VideoTime
             }
         }
 
-        private static void ExpandMatchingAncestors(TreeNode node)
+        private static void ExpandMatchingAncestors(TreeNode node, List<TreeNode> expandedByFilter)
         {
             if (node.Nodes.Count > 0)
             {
-                node.Expand();
+                // 已是展开态则跳过，避免大数据量下对全部枝干重复发送原生 Expand
+                if (!node.IsExpanded)
+                {
+                    node.Expand();
+                    expandedByFilter.Add(node);
+                }
                 foreach (TreeNode child in node.Nodes)
-                    ExpandMatchingAncestors(child);
-            }
-        }
-
-        private static void SaveExpandState(TreeNodeCollection nodes, Dictionary<TreeNode, bool> state)
-        {
-            foreach (TreeNode node in nodes)
-            {
-                state[node] = node.IsExpanded;
-                if (node.Nodes.Count > 0)
-                    SaveExpandState(node.Nodes, state);
+                    ExpandMatchingAncestors(child, expandedByFilter);
             }
         }
 
@@ -325,23 +337,10 @@ namespace VideoTime
         {
             foreach (TreeNode node in nodes)
             {
-                if (texts.TryGetValue(node, out string text))
+                if (texts.TryGetValue(node, out string text) && node.Text != text)
                     node.Text = text;
                 if (node.Nodes.Count > 0)
                     RestoreOriginalTexts(node.Nodes, texts);
-            }
-        }
-
-        private static void RestoreExpandState(TreeNodeCollection nodes, Dictionary<TreeNode, bool> state)
-        {
-            foreach (TreeNode node in nodes)
-            {
-                if (state.TryGetValue(node, out bool expanded) && expanded)
-                    node.Expand();
-                else
-                    node.Collapse();
-                if (node.Nodes.Count > 0)
-                    RestoreExpandState(node.Nodes, state);
             }
         }
 

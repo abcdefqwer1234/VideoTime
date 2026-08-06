@@ -33,7 +33,15 @@ namespace VideoTime
                 string a = args[i];
                 if (a == "-d" || a == "--folder")
                 {
-                    if (i + 1 < args.Length) folder = VideoScanner.NormalizePath(args[++i]);
+                    if (i + 1 < args.Length && !args[i + 1].StartsWith("-", StringComparison.Ordinal))
+                        folder = VideoScanner.NormalizePath(args[++i]);
+                    else
+                    {
+                        Console.Error.WriteLine("错误: 缺少 -d/--folder 的参数（文件夹路径）");
+                        PrintUsage();
+                        exitCode = 1;
+                        return true;
+                    }
                 }
                 else if (a == "-r" || a == "--recursive")
                 {
@@ -41,7 +49,15 @@ namespace VideoTime
                 }
                 else if (a == "-o" || a == "--out")
                 {
-                    if (i + 1 < args.Length) output = args[++i];
+                    if (i + 1 < args.Length && !args[i + 1].StartsWith("-", StringComparison.Ordinal))
+                        output = args[++i];
+                    else
+                    {
+                        Console.Error.WriteLine("错误: 缺少 -o/--out 的参数（输出文件）");
+                        PrintUsage();
+                        exitCode = 1;
+                        return true;
+                    }
                 }
                 else if (a == "-h" || a == "--help")
                 {

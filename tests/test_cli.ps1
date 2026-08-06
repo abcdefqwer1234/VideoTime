@@ -5,14 +5,7 @@ $ErrorActionPreference = 'Stop'
 $script:Pass = 0
 $script:Fail = 0
 
-function Assert([bool]$cond, [string]$msg) {
-    if ($cond) { $script:Pass++; Write-Host "  PASS  $msg" -ForegroundColor Green }
-    else { $script:Fail++; Write-Host "  FAIL  $msg" -ForegroundColor Red }
-}
-function BE32([long]$v) { $b = [BitConverter]::GetBytes([uint32]$v); [Array]::Reverse($b); return [byte[]]$b }
-function LE32([long]$v) { return [byte[]]([BitConverter]::GetBytes([uint32]$v)) }
-function BE64Double([double]$v) { $b = [BitConverter]::GetBytes([double]$v); [Array]::Reverse($b); return [byte[]]$b }
-function LE64([long]$v) { return [byte[]]([BitConverter]::GetBytes([int64]$v)) }
+. (Join-Path $PSScriptRoot 'lib.ps1')
 
 if (-not (Test-Path $ExePath)) { Write-Error "找不到 exe: $ExePath"; exit 1 }
 $exe = (Resolve-Path $ExePath).Path
@@ -24,36 +17,11 @@ Write-Host "测试目录: $tmp"
 $logPath = Join-Path (Split-Path $exe) 'log.txt'
 $logPre = if (Test-Path $logPath) { (Get-Item $logPath).Length } else { 0 }
 
-# ---------- samples ----------
-$ftyp = [byte[]](BE32 20) + [byte[]][char[]]('ftyp') + [byte[]][char[]]('isom') + [byte[]](0,0,0,0) + [byte[]][char[]]('isom')
-$free = [byte[]](BE32 8) + [byte[]][char[]]('free')
-$mvhd = [byte[]](BE32 108) + [byte[]][char[]]('mvhd') + [byte[]](0,0,0,0) + [byte[]](0,0,0,0) + [byte[]](0,0,0,0) + (BE32 1000) + (BE32 60000) + [byte[]](New-Object byte[] 80)
-$moov = [byte[]](BE32 (8 + $mvhd.Length)) + [byte[]][char[]]('moov') + $mvhd
-$mp4 = $ftyp + $free + $moov
-$mp4Path = Join-Path $tmp 'sample.mp4'; [IO.File]::WriteAllBytes($mp4Path, $mp4)
-
-$docType = [byte[]](0x42,0x82,0x88) + [byte[]][char[]]('matroska')
-$ebmlHeader = [byte[]](0x1A,0x45,0xDF,0xA3,0x8B) + $docType
-$timecode = [byte[]](0x2A,0xD7,0xB1,0x84) + (BE32 1000000)
-$duration = [byte[]](0x44,0x89,0x88) + (BE64Double 120000.0)
-$info = [byte[]](0x15,0x49,0xA9,0x66,0x93) + $timecode + $duration
-$segment = [byte[]](0x18,0x53,0x80,0x67,0x01,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF) + $info
-$mkv = $ebmlHeader + $segment
-$mkvPath = Join-Path $tmp 'sample.mkv'; [IO.File]::WriteAllBytes($mkvPath, $mkv)
-
-$aviData = New-Object byte[] 56
-$micro = LE32 40000; for ($i=0;$i -lt 4;$i++){ $aviData[$i] = $micro[$i] }
-$frames = LE32 5000; for ($i=0;$i -lt 4;$i++){ $aviData[16+$i] = $frames[$i] }
-$avihChunk = [byte[]][char[]]('avih') + (LE32 56) + $aviData
-$hdrl = [byte[]][char[]]('LIST') + (LE32 68) + [byte[]][char[]]('hdrl') + $avihChunk
-$avi = [byte[]][char[]]('RIFF') + (LE32 80) + [byte[]][char[]]('AVI ') + $hdrl
-$aviPath = Join-Path $tmp 'sample.avi'; [IO.File]::WriteAllBytes($aviPath, $avi)
-
-$asfGuid = [byte[]](0x30,0x26,0xB2,0x75,0x8E,0x66,0xCF,0x11,0xA6,0xD9,0x00,0xAA,0x00,0x62,0xCE,0x6C)
-$filePropsGuid = [byte[]](0xA1,0xDC,0xAB,0x8C,0x47,0xA9,0xCF,0x11,0x8E,0xE4,0x00,0xC0,0x0C,0x20,0x53,0x65)
-$fileProps = $filePropsGuid + (LE64 92) + [byte[]](New-Object byte[] 16) + (LE64 0) + (LE64 0) + (LE64 0) + (LE64 2000000000) + (LE64 0) + (LE64 0) + [byte[]](0,0,0,0)
-$headerObj = $asfGuid + (LE64 (16+8+4+1+1+$fileProps.Length)) + (LE32 1) + [byte[]](1,2) + $fileProps
-[IO.File]::WriteAllBytes((Join-Path $tmp 'sample.wmv'), $headerObj)
+# ---------- samples（经 lib.ps1 统一构造器） ----------
+$mp4Path = Join-Path $tmp 'sample.mp4'; [IO.File]::WriteAllBytes($mp4Path, (New-ValidMp4))
+$mkvPath = Join-Path $tmp 'sample.mkv'; [IO.File]::WriteAllBytes($mkvPath, (New-ValidMkv))
+$aviPath = Join-Path $tmp 'sample.avi'; [IO.File]::WriteAllBytes($aviPath, (New-ValidAvi))
+[IO.File]::WriteAllBytes((Join-Path $tmp 'sample.wmv'), (New-ValidWmv))
 
 $sub = Join-Path $tmp 'deep'
 New-Item -ItemType Directory -Path $sub | Out-Null
@@ -84,7 +52,7 @@ Assert ($r.Code -eq 0) "非递归 CSV 退出码 = $($r.Code)（期望 0）"
 Assert (Test-Path $csv) "CSV 文件已生成"
 $csvText = if (Test-Path $csv) { [IO.File]::ReadAllText($csv) } else { '' }
 Assert ($csvText -match '文件夹,总时长') "CSV 含表头（文件夹,总时长）"
-Assert ($csvText -match '580') "CSV 含总时长 580（不递归）"
+Assert ($csvText -match ',580,') "CSV 含总时长 580（不递归）"
 Assert ($csvText -match '失败明细') "CSV 含失败明细区"
 Assert ($csvText -match '文件读取失败') "CSV 含失败文件行（broken.mp4）"
 Assert ($csvText -notmatch 'deep') "CSV 不含子目录 deep（不递归）"
@@ -99,14 +67,14 @@ $tmpFwd = $tmp.Replace('\', '/')
 $r = RunCli @('-d', $tmpFwd, '-o', $csvFwd)
 Assert ($r.Code -eq 0) "正斜杠路径退出码 = $($r.Code)（期望 0）"
 $csvFwdText = if (Test-Path $csvFwd) { [IO.File]::ReadAllText($csvFwd) } else { '' }
-Assert ($csvFwdText -match '580') "正斜杠路径 CSV 含总时长 580（分隔符等价）"
+Assert ($csvFwdText -match ',580,') "正斜杠路径 CSV 含总时长 580（分隔符等价）"
 
 # ---------- recursive CSV ----------
 $csv2 = Join-Path $tmp 'out2.csv'
 $r = RunCli @('-d', $tmp, '-r', '-o', $csv2)
 Assert ($r.Code -eq 0) "递归 CSV 退出码 = $($r.Code)（期望 0）"
 $csv2Text = [IO.File]::ReadAllText($csv2)
-Assert ($csv2Text -match '640') "递归 CSV 总时长 640 秒"
+Assert ($csv2Text -match ',640,') "递归 CSV 总时长 640 秒"
 Assert ($csv2Text -match 'deep') "递归 CSV 含子目录 deep"
 
 # ---------- recursive HTML ----------
@@ -116,7 +84,7 @@ Assert ($r.Code -eq 0) "递归 HTML 退出码 = $($r.Code)（期望 0）"
 $htmlText = [IO.File]::ReadAllText($html)
 Assert ($htmlText -match '<html') "HTML 以 <html> 开头"
 Assert ($htmlText -match '视频时长统计报表') "HTML 含标题"
-Assert ($htmlText -match '640') "HTML 含总时长 640"
+Assert ($htmlText -match '>640</td>') "HTML 含总时长 640"
 Assert ($htmlText -match '失败明细') "HTML 含失败明细标题"
 Assert ($htmlText -match '文件读取失败') "HTML 含文件读取失败行"
 
@@ -135,6 +103,33 @@ Assert ($r.Code -eq 1) "未知参数退出码 = $($r.Code)（期望 1）"
 $r = RunCli @('-h')
 Assert ($r.Code -eq 0) "帮助退出码 = $($r.Code)（期望 0）"
 Assert ($r.Out -match '用法') "帮助含'用法'"
+$r = RunCli @('-d')
+Assert ($r.Code -eq 1) "缺少 -d 参数退出码 = $($r.Code)（期望 1）"
+Assert ($r.Err -match '缺少') "缺少 -d 参数提示输出到 stderr"
+$r = RunCli @('-d', $tmp, '-o')
+Assert ($r.Code -eq 1) "缺少 -o 参数退出码 = $($r.Code)（期望 1）"
+Assert ($r.Err -match '缺少') "缺少 -o 参数提示输出到 stderr"
+
+# ---------- long-form args ----------
+$csvL = Join-Path $tmp 'out_long.csv'
+$r = RunCli @('--folder', $tmp, '--out', $csvL)
+Assert ($r.Code -eq 0) "长参数 --folder/--out 退出码 = $($r.Code)（期望 0）"
+Assert (Test-Path $csvL) "长参数 --out CSV 已生成"
+$csvLText = if (Test-Path $csvL) { [IO.File]::ReadAllText($csvL) } else { '' }
+Assert ($csvLText -match ',580,') "长参数 CSV 含总时长 580"
+
+$csvL2 = Join-Path $tmp 'out_long2.csv'
+$r = RunCli @('--folder', $tmp, '--recursive', '--out', $csvL2)
+Assert ($r.Code -eq 0) "长参数 --recursive 退出码 = $($r.Code)（期望 0）"
+Assert (([IO.File]::ReadAllText($csvL2)) -match ',640,') "长参数递归 CSV 含总时长 640"
+
+$r = RunCli @('--help')
+Assert ($r.Code -eq 0) "--help 退出码 = $($r.Code)（期望 0）"
+Assert ($r.Out -match '用法') "--help 含'用法'"
+
+$r = RunCli @('--folder', $tmp, '--recursive')
+Assert ($r.Code -eq 0) "长参数树形输出退出码 = $($r.Code)（期望 0）"
+Assert ($r.Out -match '总时间') "长参数树形输出含'总时间'"
 
 # ---------- no args -> GUI stays open ----------
 $psi = New-Object Diagnostics.ProcessStartInfo

@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
@@ -26,9 +25,9 @@ namespace VideoTime
         private const int ContentGap = 6;
         private const int ContentTop = 25;
 
-        private static readonly Font RowTextBoxFont = new Font("新宋体", 10.5F);
-        private static readonly Font RowButtonFont = new Font("宋体", 10.5F);
-        private static readonly Font RowRemoveButtonFont = new Font("宋体", 12F, FontStyle.Bold);
+        private readonly Font RowTextBoxFont = new Font("新宋体", 10.5F);
+        private readonly Font RowButtonFont = new Font("宋体", 10.5F);
+        private readonly Font RowRemoveButtonFont = new Font("宋体", 12F, FontStyle.Bold);
 
         private CancellationTokenSource _scanCts;
         private ScanResult _lastResult;
@@ -63,7 +62,12 @@ namespace VideoTime
         {
             InitializeComponent();
 
-            EnableTreeDoubleBuffering();
+            Disposed += (s, e) =>
+            {
+                RowTextBoxFont.Dispose();
+                RowButtonFont.Dispose();
+                RowRemoveButtonFont.Dispose();
+            };
 
             this.ClientSizeChanged += (s, e) => AdjustUpperPanelHeight();
 
@@ -119,17 +123,6 @@ namespace VideoTime
         {
             if (ActiveControl is TextBox || ActiveControl is Button || ActiveControl is ComboBox || ActiveControl is CheckBox)
                 ActiveControl = null;
-        }
-
-        private void EnableTreeDoubleBuffering()
-        {
-            const ControlStyles styles = ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer;
-            var setStyle = typeof(Control).GetMethod("SetStyle", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            if (setStyle != null)
-                setStyle.Invoke(DetailTree, new object[] { styles, true });
-            var updateStyles = typeof(Control).GetMethod("UpdateStyles", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            if (updateStyles != null)
-                updateStyles.Invoke(DetailTree, null);
         }
 
         private void SetDragActive(bool value)
@@ -405,27 +398,27 @@ namespace VideoTime
             if (validPaths.Count == 0 && invalidPaths.Count == 0)
             {
                 ShowTime.Text = "文件夹路径无效，请重新输入。";
-                AppendLog("文件夹路径为空", LogLevel.Warning);
+                Log.Append("文件夹路径为空", LogLevel.Warning);
                 return;
             }
 
             if (validPaths.Count == 0 && invalidPaths.Count > 0)
             {
                 ShowTime.Text = "文件夹路径无效，请重新输入。";
-                AppendLog("文件夹路径无效: " + string.Join(", ", invalidPaths), LogLevel.Warning);
+                Log.Append("文件夹路径无效: " + string.Join(", ", invalidPaths), LogLevel.Warning);
                 return;
             }
 
             if (invalidPaths.Count > 0 && validPaths.Count + invalidPaths.Count > 1)
             {
                 string msg = "以下路径无效:\n" + string.Join("\n", invalidPaths) + "\n是否忽略并继续扫描其余路径？";
-                var result = Dialogs.Show("无效路径", msg, MessageBoxIcon.Warning, ("忽略", DialogResult.Yes), ("取消", DialogResult.No));
+                var result = Dialogs.Show("无效路径", msg, MessageBoxIcon.Warning, this, ("忽略", DialogResult.Yes), ("取消", DialogResult.No));
                 if (result == DialogResult.No)
                 {
                     ShowTime.Text = "扫描已取消。";
                     return;
                 }
-                AppendLog("部分路径无效: " + string.Join(", ", invalidPaths) + "，忽略后继续扫描", LogLevel.Warning);
+                Log.Append("部分路径无效: " + string.Join(", ", invalidPaths) + "，忽略后继续扫描", LogLevel.Warning);
             }
 
             if (validPaths.Count > 1)
@@ -434,7 +427,7 @@ namespace VideoTime
             if (overlapWarnings.Count > 0)
             {
                 string msg = "检测到以下重叠:\n\n" + string.Join("\n", overlapWarnings) + "\n\n仍继续扫描（允许重复计时）？";
-                var result = Dialogs.Show("重叠提示", msg, MessageBoxIcon.Information, ("是", DialogResult.Yes), ("否", DialogResult.No));
+                var result = Dialogs.Show("重叠提示", msg, MessageBoxIcon.Information, this, ("是", DialogResult.Yes), ("否", DialogResult.No));
                 if (result == DialogResult.No)
                 {
                     ShowTime.Text = "扫描已取消。";
@@ -470,7 +463,7 @@ namespace VideoTime
                     ResetProgressUI();
                     if (!IsDisposed)
                         ShowTime.Text = "扫描已取消。";
-                    AppendLog("扫描已取消", LogLevel.Info);
+                    Log.Append("扫描已取消", LogLevel.Info);
                     return;
                 }
                 sw.Stop();
@@ -487,11 +480,11 @@ namespace VideoTime
                     issues.Add(VideoScanner.DepthSkippedLabel(VideoScanner.MaxDepth));
                 if (issues.Count > 0)
                 {
-                    AppendLog("扫描完成但存在缺失: " + string.Join("；", issues) + " | " + string.Join(", ", validPaths) + " | 耗时: " + elapsedText, LogLevel.Warning);
+                    Log.Append("扫描完成但存在缺失: " + string.Join("；", issues) + " | " + string.Join(", ", validPaths) + " | 耗时: " + elapsedText, LogLevel.Warning);
                     LogFailureDetails(result);
                 }
                 ShowTime.Text = resultText;
-                AppendLog("文件夹: " + string.Join(", ", validPaths) + " | 总时间: " + VideoScanner.Format(result.TotalSeconds) + " | 耗时: " + elapsedText);
+                Log.Append("文件夹: " + string.Join(", ", validPaths) + " | 总时间: " + VideoScanner.Format(result.TotalSeconds) + " | 耗时: " + elapsedText);
 
                 int totalFiles = result.TotalFileCount;
                 UpdateProgress(new ScanProgress { Phase = "parse", Processed = totalFiles, Total = totalFiles });
@@ -504,19 +497,19 @@ namespace VideoTime
                 if (issues.Count > 0)
                 {
                     Dialogs.Show("扫描完成", "扫描完成，但存在缺失：\n\n" + string.Join("\n", issues) + "\n\n详细原因已写入日志文件。",
-                        MessageBoxIcon.Warning);
+                        MessageBoxIcon.Warning, this);
                 }
             }
             catch (OperationCanceledException)
             {
                 ShowTime.Text = "扫描已取消。";
-                AppendLog("扫描已取消", LogLevel.Info);
+                Log.Append("扫描已取消", LogLevel.Info);
                 ResetProgressUI();
             }
             catch (Exception ex)
             {
-                AppendLog("查询异常: " + ex.Message, LogLevel.Error);
-                Dialogs.Show("错误", "查询异常: " + ex.Message, MessageBoxIcon.Error);
+                Log.Append("查询异常: " + ex.Message, LogLevel.Error);
+                Dialogs.Show("错误", "查询异常: " + ex.Message, MessageBoxIcon.Error, this);
                 ResetProgressUI();
             }
             finally
@@ -711,7 +704,7 @@ namespace VideoTime
             if (!string.IsNullOrWhiteSpace(txtCountMax.Text) && !opt.CountMax.HasValue) invalidFields.Add("数量上限");
             if (invalidFields.Count > 0)
             {
-                Dialogs.Show("筛选输入无效", "以下筛选条件无法识别，请输入数字：\n\n" + string.Join("\n", invalidFields.Select(f => "· " + f)), MessageBoxIcon.Warning);
+                Dialogs.Show("筛选输入无效", "以下筛选条件无法识别，请输入数字：\n\n" + string.Join("\n", invalidFields.Select(f => "· " + f)), MessageBoxIcon.Warning, this);
                 return;
             }
 
@@ -778,11 +771,6 @@ namespace VideoTime
 
         #region Existing functionality
 
-        private void AppendLog(string line, LogLevel level = LogLevel.Info)
-        {
-            Log.Append(line, level);
-        }
-
         private void LogFailureDetails(ScanResult result)
         {
             WriteFailures(result.FailedFiles, VideoScanner.LabelFileFailed);
@@ -790,9 +778,9 @@ namespace VideoTime
 
             int shown = Math.Min(MaxDetailLines, result.SkippedDirs.Count);
             for (int i = 0; i < shown; i++)
-                AppendLog(VideoScanner.DepthSkippedLabel(VideoScanner.MaxDepth) + ": " + result.SkippedDirs[i], LogLevel.Warning);
+                Log.Append(VideoScanner.DepthSkippedLabel(VideoScanner.MaxDepth) + ": " + result.SkippedDirs[i], LogLevel.Warning);
             if (result.SkippedDirs.Count > MaxDetailLines)
-                AppendLog("…其余省略，共 " + result.SkippedDirs.Count + " 项", LogLevel.Warning);
+                Log.Append("…其余省略，共 " + result.SkippedDirs.Count + " 项", LogLevel.Warning);
         }
 
         private void WriteFailures(List<FailureRecord> list, string label)
@@ -801,10 +789,10 @@ namespace VideoTime
             for (int i = 0; i < shown; i++)
             {
                 FailureRecord it = list[i];
-                AppendLog(label + ": " + it.Path + (string.IsNullOrEmpty(it.Reason) ? "" : "（" + it.Reason + "）"), LogLevel.Warning);
+                Log.Append(label + ": " + it.Path + (string.IsNullOrEmpty(it.Reason) ? "" : "（" + it.Reason + "）"), LogLevel.Warning);
             }
             if (list.Count > MaxDetailLines)
-                AppendLog("…其余省略，共 " + list.Count + " 项", LogLevel.Warning);
+                Log.Append("…其余省略，共 " + list.Count + " 项", LogLevel.Warning);
         }
 
         private void BtnSettings_Click(object sender, EventArgs e)
@@ -1219,13 +1207,13 @@ namespace VideoTime
                 {
                     string format = saveDialog.FilterIndex == 2 ? "html" : "csv";
                     ReportExporter.Export(saveDialog.FileName, _lastResult, format);
-                    AppendLog("报表已导出: " + saveDialog.FileName);
-                    Dialogs.Show("完成", "报表已导出到:\n" + saveDialog.FileName, MessageBoxIcon.Information);
+                    Log.Append("报表已导出: " + saveDialog.FileName);
+                    Dialogs.Show("完成", "报表已导出到:\n" + saveDialog.FileName, MessageBoxIcon.Information, this);
                 }
                 catch (Exception ex)
                 {
-                    AppendLog("导出失败: " + ex.Message, LogLevel.Error);
-                    Dialogs.Show("错误", "导出失败: " + ex.Message, MessageBoxIcon.Error);
+                    Log.Append("导出失败: " + ex.Message, LogLevel.Error);
+                    Dialogs.Show("错误", "导出失败: " + ex.Message, MessageBoxIcon.Error, this);
                 }
             }
         }
@@ -1240,7 +1228,7 @@ namespace VideoTime
         private void SafeSetClipboard(string text)
         {
             try { Clipboard.SetText(text); }
-            catch (Exception) { AppendLog("复制到剪贴板失败", LogLevel.Warning); }
+            catch (Exception) { Log.Append("复制到剪贴板失败", LogLevel.Warning); }
         }
 
         private string GetVisibleTreeText()
@@ -1269,8 +1257,8 @@ namespace VideoTime
             string text = GetVisibleTreeText();
             if (text.Length == 0)
             {
-                AppendLog("保存图片失败: 无可保存的文本内容", LogLevel.Warning);
-                Dialogs.Show("提示", "没有可保存的文本内容。", MessageBoxIcon.Information);
+                Log.Append("保存图片失败: 无可保存的文本内容", LogLevel.Warning);
+                Dialogs.Show("提示", "没有可保存的文本内容。", MessageBoxIcon.Information, this);
                 return;
             }
 
@@ -1285,80 +1273,16 @@ namespace VideoTime
                 ImageFormat format = saveDialog.FilterIndex == 2 ? ImageFormat.Bmp : ImageFormat.Png;
                 try
                 {
-                    using (var img = RenderTextToImage(text))
+                    using (var img = TextImageRenderer.Render(text))
                         img.Save(saveDialog.FileName, format);
-                    AppendLog("图片已保存: " + saveDialog.FileName);
-                    Dialogs.Show("完成", "图片已保存到:\n" + saveDialog.FileName, MessageBoxIcon.Information);
+                    Log.Append("图片已保存: " + saveDialog.FileName);
+                    Dialogs.Show("完成", "图片已保存到:\n" + saveDialog.FileName, MessageBoxIcon.Information, this);
                 }
                 catch (Exception ex)
                 {
-                    AppendLog("保存失败: " + ex.Message, LogLevel.Error);
-                    Dialogs.Show("错误", "保存失败: " + ex.Message, MessageBoxIcon.Error);
+                    Log.Append("保存失败: " + ex.Message, LogLevel.Error);
+                    Dialogs.Show("错误", "保存失败: " + ex.Message, MessageBoxIcon.Error, this);
                 }
-            }
-        }
-
-        private static Image RenderTextToImage(string text)
-        {
-            const float fontSize = 16f;
-            const int pad = 20;
-            const int lineSpacing = 28;
-            const float maxScale = 3f;
-            const int maxLines = 30000;
-            const long maxPixels = 24_000_000L;
-
-            string[] lines = text.Replace("\r\n", "\n").Split('\n');
-            if (lines.Length > 0 && lines[lines.Length - 1].Length == 0)
-                Array.Resize(ref lines, lines.Length - 1);
-
-            if (lines.Length > maxLines)
-            {
-                int omitted = lines.Length - maxLines;
-                string[] kept = new string[maxLines + 1];
-                Array.Copy(lines, kept, maxLines);
-                kept[maxLines] = "……（共 " + lines.Length + " 行，已省略 " + omitted + " 行，请改用“复制当前界面文本”）";
-                lines = kept;
-            }
-
-            // 以 scale=1 测量自然宽高，再按像素预算确定实际缩放，避免大结果时位图内存无界
-            float width1 = 0;
-            using (Font measureFont = new Font("新宋体", fontSize, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (Bitmap measureBmp = new Bitmap(1, 1))
-            using (Graphics g = Graphics.FromImage(measureBmp))
-            {
-                foreach (string line in lines)
-                {
-                    float w = g.MeasureString(line, measureFont).Width;
-                    if (w > width1) width1 = w;
-                }
-            }
-
-            float h1 = lines.Length * lineSpacing;
-            float scale = maxScale;
-            float budgetScale = (float)Math.Sqrt((double)maxPixels / (double)(Math.Max(width1, 1f) * Math.Max(h1, 1f)));
-            if (budgetScale < scale) scale = budgetScale;
-
-            int scaledPad = (int)(pad * scale);
-            int scaledSpacing = (int)(lineSpacing * scale);
-            int width = Math.Max(1, (int)Math.Ceiling(width1 * scale) + scaledPad * 2);
-            int height = Math.Max(1, (int)Math.Ceiling(h1 * scale) + scaledPad * 2);
-
-            using (Font font = new Font("新宋体", fontSize * scale, FontStyle.Regular, GraphicsUnit.Pixel))
-            {
-                Bitmap bmp = new Bitmap(width, height);
-                bmp.SetResolution(96f * scale, 96f * scale);
-                using (Graphics g = Graphics.FromImage(bmp))
-                {
-                    g.SmoothingMode = SmoothingMode.AntiAlias;
-                    g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-                    g.Clear(Color.White);
-                    using (SolidBrush brush = new SolidBrush(Color.Black))
-                    {
-                        for (int i = 0; i < lines.Length; i++)
-                            g.DrawString(lines[i], font, brush, scaledPad, scaledPad + i * scaledSpacing);
-                    }
-                }
-                return bmp;
             }
         }
 

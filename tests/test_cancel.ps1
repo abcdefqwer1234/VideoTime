@@ -6,21 +6,7 @@ $ErrorActionPreference = 'Stop'
 $script:Pass = 0
 $script:Fail = 0
 
-function Assert([bool]$cond, [string]$msg) {
-    if ($cond) { $script:Pass++; Write-Host "  PASS  $msg" -ForegroundColor Green }
-    else { $script:Fail++; Write-Host "  FAIL  $msg" -ForegroundColor Red }
-}
-function Approx([double]$a, [double]$b, [double]$tol) { [Math]::Abs($a - $b) -le $tol }
-function BE32([long]$v) { $b = [BitConverter]::GetBytes([uint32]$v); [Array]::Reverse($b); return [byte[]]$b }
-
-function Is-Oce([Exception]$ex) {
-    $e = $ex
-    while ($e -ne $null) {
-        if ($e -is [OperationCanceledException]) { return $true }
-        $e = $e.InnerException
-    }
-    return $false
-}
+. (Join-Path $PSScriptRoot 'lib.ps1')
 
 if (-not (Test-Path $ExePath)) { Write-Error "exe not found: $ExePath"; exit 1 }
 $exe = (Resolve-Path $ExePath).Path
@@ -28,24 +14,17 @@ $hdir = Join-Path $env:TEMP ('vt_helper_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $hdir | Out-Null
 Copy-Item $exe (Join-Path $hdir 'VideoTime.exe') -Force
 Copy-Item (Join-Path $HelperDir 'CollectProgress.dll') (Join-Path $hdir 'CollectProgress.dll') -Force
-[void][Reflection.Assembly]::LoadFrom((Join-Path $hdir 'VideoTime.exe'))
+[void][Reflection.Assembly]::Load([IO.File]::ReadAllBytes((Join-Path $hdir 'VideoTime.exe')))
 [void][VideoTime.DurationParser]
 
 # progress helper: records progress lines + cancels on a chosen phase
-$helperAsm = [Reflection.Assembly]::LoadFrom((Join-Path $hdir 'CollectProgress.dll'))
+$helperAsm = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes((Join-Path $hdir 'CollectProgress.dll')))
 $recorderType = $helperAsm.GetType('CancelRecorder')
 if (-not $recorderType) { Write-Error 'CollectProgress.dll 缺少 CancelRecorder 类型'; exit 1 }
 
 $tmp = Join-Path $env:TEMP ('vt_cancel_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null
 Write-Host "test dir: $tmp"
-
-function New-ValidMp4([uint32]$durMs = 60000) {
-    $ftyp = [byte[]](BE32 20) + [byte[]][char[]]('ftyp') + [byte[]][char[]]('isom') + [byte[]](0,0,0,0) + [byte[]][char[]]('isom')
-    $mvhd = [byte[]](BE32 108) + [byte[]][char[]]('mvhd') + [byte[]](0,0,0,0) + [byte[]](0,0,0,0) + [byte[]](0,0,0,0) + (BE32 1000) + (BE32 $durMs) + [byte[]](New-Object byte[] 80)
-    $moov = [byte[]](BE32 (8 + $mvhd.Length)) + [byte[]][char[]]('moov') + $mvhd
-    return $ftyp + $moov
-}
 
 Write-Host '== Cancel =='
 
@@ -92,6 +71,30 @@ Assert ($parseLines.Count -ge 1) "cancel on parse -> parse progress reported ($(
 $lastParse = $parseLines[-1]
 Assert ($lastParse -ne 'parse:24/24') "cancel on parse -> last report not N/N ($lastParse)"
 Assert ($cr2.Lines[-1] -like 'parse:*') "cancel on parse -> no progress after last parse report"
+
+# multi-root RunMultiple: collect reported as initial + per-root (regression for collect progress)
+$dirM1 = Join-Path $tmp 'm1'
+$dirM2 = Join-Path $tmp 'm2'
+New-Item -ItemType Directory -Path $dirM1 | Out-Null
+New-Item -ItemType Directory -Path $dirM2 | Out-Null
+[IO.File]::WriteAllBytes((Join-Path $dirM1 'a.mp4'), (New-ValidMp4))
+[IO.File]::WriteAllBytes((Join-Path $dirM2 'b.mp4'), (New-ValidMp4))
+$cr4 = [Activator]::CreateInstance($recorderType)
+$r4 = [VideoTime.VideoScanner]::RunMultiple(@($dirM1, $dirM2), $true, [Threading.CancellationToken]::None, $cr4)
+Assert ($r4.TotalSeconds -eq 120) "RunMultiple 双根合计 = 120s（60+60）"
+$cLines = @($cr4.Lines | Where-Object { $_ -like 'collect:*' })
+Assert ($cLines.Count -eq 3) "RunMultiple collect 上报 0/2,1/2,2/2 三条（got $($cLines.Count)）"
+Assert ($cLines[0] -eq 'collect:0/2') "RunMultiple 首条 collect:0/2（got $($cLines[0])）"
+Assert ($cLines[2] -eq 'collect:2/2') "RunMultiple 末条 collect:2/2（got $($cLines[2])）"
+
+# multi-root cancel on parse phase still works
+$cts5 = New-Object Threading.CancellationTokenSource
+$cr5 = [Activator]::CreateInstance($recorderType)
+$cr5.CancelPhase = 'parse'
+$cr5.OnHit = [Action]{ $cts5.Cancel() }
+$oce5 = $false
+try { $null = [VideoTime.VideoScanner]::RunMultiple(@($dirM1, $dirM2), $true, $cts5.Token, $cr5) } catch { $oce5 = Is-Oce $_.Exception }
+Assert ($oce5) "RunMultiple cancel on parse -> OperationCanceledException"
 
 Write-Host ''
 Write-Host "Passed $script:Pass, Failed $script:Fail"

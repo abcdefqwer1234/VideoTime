@@ -1,4 +1,4 @@
-# test_multiroot.ps1 - tests multi-root aggregation and filter logic
+﻿# test_multiroot.ps1 - tests multi-root aggregation and filter logic
 # Usage: powershell -ExecutionPolicy Bypass -File tests\test_multiroot.ps1 [-ExePath <path>]
 param(
     [string]$ExePath = ''
@@ -39,7 +39,7 @@ $refArgs = @(
     (Join-Path $refAsm 'System.Drawing.dll'),
     (Join-Path $refAsm 'System.Windows.Forms.dll')
 ) | ForEach-Object { "/r:$_" }
-Write-Host '[3/3] Compiling MultiRootFilterTest.dll ...'
+Write-Host '[3/3] Compiling MultiRootFilterTest.exe ...'
 & $csc /target:exe /out:$helperExe @refArgs "/r:$ExePath" (Join-Path $testsDir 'MultiRootFilterTest.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Test helper compilation failed' }
 
